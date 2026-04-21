@@ -1,0 +1,3392 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pomodoro Timer</title>
+<!-- Strict CSP: no external resources, no network, no iframe embedding -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; connect-src 'none'; font-src 'none'; frame-ancestors 'none'; form-action 'none'; base-uri 'none';">
+<meta name="referrer" content="no-referrer">
+<style>
+/* ── Reset & Variables ── */
+*{margin:0;padding:0;box-sizing:border-box;}
+:root{
+  --bg:#ece7de;--shell:#f3efe8;--card:#f9f7f3;--card-bd:#e2ddd4;
+  --text:#2d2d2d;--sub:#8a8a8a;--muted:#b5b5b5;
+  --track:#ddd8cf;--input:#efebe4;--input-bd:#d8d3ca;--hover:#eee9e1;
+  --pri:#4a8f6b;--pri-glow:rgba(74,143,107,.2);--pri-lt:rgba(74,143,107,.08);--pri-vlt:rgba(74,143,107,.04);
+  --rest:#e8a44c;--rest-glow:rgba(232,164,76,.2);
+  --font:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR','Noto Sans CJK KR',system-ui,sans-serif;
+}
+/* ── Layout ── */
+body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:100vh;display:flex;flex-direction:column;padding:clamp(6px,1vw,14px);transition:background .4s,color .4s;}
+.shell{width:100%;max-width:1400px;margin:0 auto;flex:1;background:var(--shell);border:1px solid var(--card-bd);border-radius:20px;padding:clamp(10px,1.2vw,18px);box-shadow:0 4px 32px rgba(0,0,0,.06);transition:all .4s;display:flex;flex-direction:column;}
+.grid{display:grid;grid-template-columns:1.1fr .9fr;grid-template-rows:1fr auto;gap:clamp(8px,1vw,14px);flex:1;min-height:0;}
+/* ── Card visibility overrides (driven by layout checkboxes in advanced settings) ──
+   When cards are hidden, the grid rebalances so remaining card(s) fill available space. */
+.grid.no-timer .timer-card,
+.grid.no-todo .todo-card,
+.grid.no-clock .clock-card{display:none;}
+/* Single-card layouts: switch to flex for reliable centering */
+.grid.only-timer,
+.grid.only-todo,
+.grid.only-clock{display:flex;align-items:center;justify-content:center;}
+.grid.only-timer .timer-card,
+.grid.only-todo .todo-card,
+.grid.only-clock .clock-card{width:100%;max-width:600px;}
+/* Two-card layouts */
+.grid.no-clock{grid-template-columns:1.1fr .9fr;grid-template-rows:1fr;}
+.grid.no-clock .timer-card{grid-row:1;}
+.grid.no-clock .todo-card{grid-row:1;}
+.grid.no-timer{grid-template-columns:1fr;grid-template-rows:1fr auto;}
+.grid.no-timer .todo-card{grid-column:1;grid-row:1;}
+.grid.no-timer .clock-card{grid-column:1;grid-row:2;}
+.grid.no-todo{grid-template-columns:1.1fr .9fr;grid-template-rows:1fr;}
+.grid.no-todo .timer-card{grid-row:1;grid-column:1;}
+.grid.no-todo .clock-card{grid-row:1;grid-column:2;}
+.card{background:var(--card);border:1px solid var(--card-bd);border-radius:14px;padding:clamp(14px,1.4vw,22px);box-shadow:0 1px 8px rgba(0,0,0,.03);transition:all .4s;}
+
+/* ── Timer Card ── */
+.timer-card{grid-row:1/3;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;}
+
+/* Pomodoro status badge */
+.pomo-badge{display:none;align-items:center;gap:6px;font-size:11px;font-weight:600;color:var(--pri);padding:3px 12px;border-radius:16px;background:var(--pri-vlt);border:1px solid var(--pri-lt);}
+.pomo-badge.on{display:flex;}
+.pomo-badge.rest{color:var(--rest);background:rgba(232,164,76,.06);border-color:rgba(232,164,76,.15);}
+.pomo-badge::before{content:'';width:5px;height:5px;border-radius:50%;background:currentColor;animation:pulse 1.5s infinite;}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+
+/* Editable message */
+.msg{font-size:clamp(11px,1.2vw,14px);color:var(--sub);font-weight:500;letter-spacing:.3px;cursor:pointer;border:1px solid transparent;border-radius:8px;padding:3px 12px;text-align:center;max-width:min(280px,90%);outline:none;background:transparent;transition:all .2s;position:relative;}
+.msg:hover{border-color:var(--pri);background:var(--pri-vlt);color:var(--text);}
+.msg:hover::after{content:'\270E';position:absolute;right:5px;top:50%;transform:translateY(-50%);font-size:10px;color:var(--pri);opacity:.7;pointer-events:none;}
+.msg.editing{border-color:var(--pri);background:var(--pri-vlt);}
+.msg.editing:hover::after{display:none;}
+
+/* Timer ring — rectangular */
+.ring-wrap{position:relative;width:clamp(220px,38vw,520px);aspect-ratio:340/220;}
+.ring-wrap svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;}
+.ring-bg{fill:none;stroke:var(--track);stroke-width:34;stroke-linejoin:round;transition:stroke .4s;}
+/* The ring stroke itself fills as progress advances.
+   stroke-dasharray + stroke-dashoffset are set dynamically from JS. */
+.ring-fg{fill:none;stroke-width:34;stroke:var(--pri);stroke-linecap:round;stroke-linejoin:round;transition:stroke-dashoffset .5s ease,stroke .4s;filter:drop-shadow(0 0 6px var(--pri-glow));}
+.ring-fg.rest{stroke:var(--rest);filter:drop-shadow(0 0 6px var(--rest-glow));}
+.ring-center{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;}
+
+/* Time display */
+.time{display:flex;align-items:center;gap:clamp(2px,.6vw,5px);}
+.time-block{display:flex;flex-direction:column;align-items:center;gap:1px;}
+.time-num{font-size:clamp(26px,5.8vw,64px);font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:1px;line-height:1;color:var(--text);transition:color .4s;}
+.time-label{font-size:clamp(7px,.85vw,11px);color:var(--muted);font-weight:600;letter-spacing:2px;text-transform:uppercase;}
+.time-sep{font-size:clamp(18px,4vw,44px);font-weight:300;color:var(--input-bd);margin-bottom:clamp(5px,1vw,14px);}
+
+/* Controls */
+.ctrls{display:flex;align-items:center;justify-content:center;gap:10px;}
+.cb{background:none;border:2px solid var(--card-bd);color:var(--sub);cursor:pointer;width:clamp(34px,3vw,46px);height:clamp(34px,3vw,46px);border-radius:50%;display:flex;align-items:center;justify-content:center;transition:all .25s;}
+.cb svg{width:clamp(14px,1.4vw,22px);height:clamp(14px,1.4vw,22px);fill:currentColor;}
+.cb:hover{color:var(--pri);border-color:var(--pri);background:var(--pri-vlt);}
+.cb.on{color:#fff;border-color:var(--pri);background:var(--pri);box-shadow:0 2px 10px var(--pri-glow);}
+.cb.rest-h:hover{color:var(--rest);border-color:var(--rest);background:rgba(232,164,76,.06);}
+.cb.set-h:hover{color:var(--text);border-color:var(--sub);}
+
+/* Presets */
+.presets{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;width:100%;max-width:300px;}
+.pre{padding:5px 0;border-radius:14px;border:1.5px solid var(--card-bd);background:transparent;color:var(--sub);font-size:clamp(10px,.95vw,12px);font-weight:600;cursor:pointer;transition:all .2s;text-align:center;}
+.pre:hover{border-color:var(--pri);color:var(--pri);}
+.pre.on{background:var(--pri);color:#fff;border-color:var(--pri);box-shadow:0 2px 8px var(--pri-glow);}
+
+/* Custom input */
+.custom{display:flex;align-items:center;gap:5px;font-size:clamp(11px,1.1vw,13px);color:var(--sub);}
+.custom b{color:var(--text);}
+.ci{width:42px;text-align:center;padding:4px;border-radius:8px;border:1px solid var(--input-bd);background:var(--input);color:var(--text);font-size:12px;font-weight:500;outline:none;font-family:var(--font);}
+.ci:focus{border-color:var(--pri);}
+/* Hide number-input spinners so numbers render truly centered */
+.ci::-webkit-outer-spin-button,.ci::-webkit-inner-spin-button,
+.m-inp::-webkit-outer-spin-button,.m-inp::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}
+.ci,.m-inp{-moz-appearance:textfield;appearance:textfield;}
+.apply{padding:4px 10px;border-radius:8px;border:none;background:var(--pri);color:#fff;font-size:11px;font-weight:700;cursor:pointer;font-family:var(--font);}
+.apply:hover{filter:brightness(1.1);}
+
+/* Text label inside a control button (used for +5 / −5) */
+.cb.cb-text{font-size:clamp(10px,1vw,12px);font-weight:700;font-family:var(--font);letter-spacing:-.3px;}
+.cb.cb-text:hover{color:var(--pri);border-color:var(--pri);background:var(--pri-vlt);}
+.cb.cb-text.disabled{opacity:.35;cursor:not-allowed;}
+.cb.cb-text.disabled:hover{color:var(--sub);border-color:var(--card-bd);background:none;}
+
+/* ── Todo Card ── */
+.todo-card{display:flex;flex-direction:column;overflow:hidden;padding-bottom:0;position:relative;}
+.sec-hd{font-size:clamp(12px,1.5vw,18px);font-weight:800;text-align:center;margin-bottom:6px;color:var(--text);}
+
+/* Progress */
+.prog-lbl{font-size:10px;color:var(--sub);text-align:right;margin-bottom:2px;font-weight:500;}
+.prog-lbl.done{color:var(--pri);text-align:center;font-weight:700;}
+.prog-wrap{height:4px;background:var(--track);border-radius:2px;margin-bottom:5px;overflow:hidden;}
+.prog-bar{height:100%;border-radius:2px;background:var(--pri);width:0;transition:width .4s;}
+.celebrate{display:none;text-align:center;padding:4px 0 2px;font-size:11px;color:var(--pri);font-weight:700;}
+.celebrate.on{display:block;}
+
+/* Priority selector */
+.pri-row{display:flex;gap:4px;margin-bottom:6px;align-items:center;}
+.pri-row span{font-size:10px;color:var(--sub);font-weight:600;}
+.pb{padding:3px 9px;border-radius:10px;border:1.5px solid var(--card-bd);background:transparent;font-size:10px;font-weight:600;cursor:pointer;color:var(--sub);font-family:var(--font);transition:all .2s;}
+.pb:hover{border-color:var(--pc, var(--pri));color:var(--pc, var(--pri));}
+.pb.on{background:var(--pc);color:#fff;border-color:var(--pc);}
+
+/* Todo input */
+.t-row{display:flex;gap:5px;margin-bottom:5px;}
+/* Tag guide hint */
+.tag-guide{font-size:10px;color:var(--muted);margin-bottom:6px;}
+.tag-guide-toggle{cursor:pointer;opacity:.7;transition:opacity .15s;}
+.tag-guide-toggle:hover{opacity:1;color:var(--sub);}
+.tag-guide-body{display:none;flex-direction:column;gap:2px;padding:4px 0 0 4px;color:var(--sub);}
+.tag-guide.open .tag-guide-body{display:flex;}
+/* Undo delete bar */
+.undo-bar{display:none;align-items:center;justify-content:space-between;padding:6px 12px;background:var(--pri-vlt);border:1px solid var(--pri-lt);border-radius:8px;margin-bottom:4px;font-size:11px;color:var(--sub);animation:fadeSlide .25s ease;}
+.undo-bar.on{display:flex;}
+.undo-bar button{background:var(--pri);color:#fff;border:none;padding:3px 10px;border-radius:6px;font-size:10px;font-weight:700;cursor:pointer;font-family:var(--font);}
+@keyframes fadeSlide{from{opacity:0;transform:translateY(-4px);}to{opacity:1;transform:translateY(0);}}
+.t-inp{flex:1;padding:6px 9px;border-radius:10px;border:1px solid var(--input-bd);background:var(--input);color:var(--text);font-size:clamp(10px,1.05vw,14px);outline:none;font-family:var(--font);}
+.t-inp::placeholder{color:var(--muted);}
+.t-inp:focus{border-color:var(--pri);}
+.t-btn{padding:6px 10px;border-radius:10px;border:none;background:var(--pri);color:#fff;font-size:clamp(10px,1.05vw,14px);font-weight:700;cursor:pointer;font-family:var(--font);}
+.t-btn:hover{filter:brightness(1.1);}
+
+/* Todo list */
+.t-list{list-style:none;display:flex;flex-direction:column;gap:3px;flex:1;overflow-y:auto;max-height:200px;}
+.t-list::-webkit-scrollbar{width:3px;}
+.t-list::-webkit-scrollbar-thumb{background:var(--input-bd);border-radius:2px;}
+.ti{display:flex;align-items:flex-start;gap:7px;padding:6px 9px;background:var(--input);border-radius:9px;transition:all .2s;}
+.ti:hover{background:var(--hover);}
+.ti.done{opacity:.55;}
+/* Priority bar — rectangular accent left of number */
+.ti-pri-bar{width:5px;min-height:22px;border-radius:3px;flex-shrink:0;background:var(--pc, var(--card-bd));transition:background .2s;align-self:stretch;}
+.ti-n{width:20px;height:20px;border-radius:50%;border:2px solid var(--card-bd);display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;cursor:pointer;flex-shrink:0;color:var(--sub);background:var(--card);transition:all .2s;margin-top:1px;}
+.ti.done .ti-n{background:var(--pri);border-color:var(--pri);color:#fff;animation:checkPop .3s ease;}
+@keyframes checkPop{0%{transform:scale(1);}40%{transform:scale(1.25);}100%{transform:scale(1);}}
+.ti-t{flex:1;font-size:clamp(10px,1.05vw,15px);color:var(--text);word-break:break-word;min-width:0;line-height:1.4;}
+.ti.done .ti-t{text-decoration:line-through;color:var(--muted);}
+.ti-pri-wrap{position:relative;flex-shrink:0;}
+.ti-pri-btn{background:none;border:none;color:var(--muted);font-size:10px;cursor:pointer;padding:0 1px;line-height:1;transition:color .2s;vertical-align:middle;}
+.ti-pri-btn:hover{color:var(--pri);}
+.ti-pri-dd{display:none;position:absolute;right:0;top:100%;margin-top:2px;background:var(--card);border:1px solid var(--card-bd);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);z-index:50;overflow:hidden;white-space:nowrap;}
+.ti-pri-dd.open{display:flex;align-items:stretch;}
+.ti-pri-opt{padding:6px 10px;border:none;background:transparent;font-size:10px;font-weight:600;cursor:pointer;text-align:center;font-family:var(--font);color:var(--text);transition:background .15s;flex-shrink:0;}
+.ti-pri-opt:hover{background:var(--hover);}
+.ti-pri-opt.active{color:var(--pri);font-weight:700;}
+.ti-acts{display:flex;gap:2px;margin-top:1px;}
+.ti-sub{background:none;border:none;color:var(--muted);font-size:14px;cursor:pointer;font-weight:700;line-height:1;padding:0 2px;}
+.ti-sub:hover{color:var(--pri);}
+.ti-del{background:none;border:none;color:var(--muted);font-size:14px;cursor:pointer;padding:0 2px;}
+.ti-del:hover{color:#e57373;}
+.t-empty{text-align:center;color:var(--muted);padding:18px 0;font-size:11px;}
+
+/* Sub-tasks */
+.si-row{display:flex;gap:4px;padding:4px 6px 4px 30px;background:var(--pri-vlt);border-radius:7px;margin:2px 0;}
+.si-inp{flex:1;padding:5px 8px;border-radius:7px;border:1px solid var(--pri-lt);background:var(--card);color:var(--text);font-size:11px;outline:none;font-family:var(--font);}
+.si-inp:focus{border-color:var(--pri);}
+.si-inp::placeholder{color:var(--muted);}
+.si-btn{padding:5px 12px;border-radius:7px;border:none;background:var(--pri);color:#fff;font-size:11px;font-weight:700;cursor:pointer;font-family:var(--font);flex-shrink:0;}
+.si-btn:hover{background:var(--pri);color:#fff;}
+.si{display:flex;align-items:flex-start;gap:5px;padding:3px 9px 3px 30px;}
+.si:hover{background:var(--hover);border-radius:7px;}
+.si.done{opacity:.35;}
+.si-c{width:13px;height:13px;border-radius:50%;border:2px solid var(--card-bd);display:flex;align-items:center;justify-content:center;font-size:6px;cursor:pointer;flex-shrink:0;color:var(--sub);background:var(--card);}
+.si.done .si-c{background:var(--pri);border-color:var(--pri);color:#fff;}
+.si-t{flex:1;font-size:10px;color:var(--sub);word-break:break-word;min-width:0;line-height:1.4;}
+.si.done .si-t{text-decoration:line-through;color:var(--muted);}
+.si-d{background:none;border:none;color:var(--muted);font-size:12px;cursor:pointer;padding:0 2px;}
+.si-d:hover{color:#e57373;}
+
+/* Filter tabs */
+.t-search-wrap{display:flex;align-items:center;gap:6px;margin-top:auto;padding:6px 8px;border-top:1px solid var(--card-bd);}
+.t-search-ico{flex-shrink:0;opacity:.35;color:var(--sub);font-size:12px;pointer-events:none;}
+.t-search{flex:1;padding:5px 10px;border-radius:8px;border:1px solid var(--input-bd);background:var(--input);color:var(--text);font-size:11px;font-family:var(--font);outline:none;transition:all .2s;min-width:0;}
+.t-search:focus{border-color:var(--pri);background:var(--pri-vlt);}
+.t-search::placeholder{color:var(--muted);opacity:.6;}
+.filters{display:flex;flex-wrap:wrap;border-top:1px solid var(--card-bd);}
+.ft{flex:1;padding:7px 2px 6px;border:none;border-right:1px solid var(--card-bd);border-radius:0;background:transparent;color:var(--muted);font-size:clamp(9px,.85vw,11px);font-weight:600;cursor:pointer;font-family:var(--font);text-align:center;position:relative;transition:all .2s;}
+.ft:last-child{border-right:none;}
+.ft:hover{color:var(--sub);background:var(--pri-vlt);}
+.ft.on{color:var(--pri);background:var(--pri-vlt);}
+.ft.on::after{content:'';position:absolute;bottom:0;left:20%;right:20%;height:2px;background:var(--pri);border-radius:1px;}
+.ft .fc{font-size:8px;margin-left:1px;opacity:.6;}
+.ft.on .fc{opacity:1;}
+
+/* ── Clock Card ── */
+/* ── Global view tabs (Timer·Todo / Stats) ── */
+.view-tabs{display:flex;gap:4px;margin-bottom:clamp(8px,1vw,14px);background:var(--shell);border-radius:14px;padding:4px;border:1px solid var(--card-bd);flex-shrink:0;}
+.view-tab{flex:1;padding:clamp(8px,1vw,12px) 12px;border:none;background:transparent;color:var(--sub);font-size:clamp(12px,1.2vw,15px);font-weight:700;cursor:pointer;font-family:var(--font);border-radius:10px;transition:all .2s;letter-spacing:-.2px;}
+.view-tab:hover{color:var(--text);background:var(--pri-vlt);}
+.view-tab.on{background:var(--pri);color:#fff;box-shadow:0 2px 8px var(--pri-glow);}
+.view-panel{display:none;flex:1;min-height:0;flex-direction:column;}
+.view-panel.on{display:flex;}
+
+/* ── Memo card ── */
+.memo-card{display:flex;flex-direction:column;gap:clamp(8px,1vw,12px);padding:clamp(14px,1.6vw,22px);min-height:0;flex:1;}
+.memo-head{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+.memo-title{flex:1;min-width:160px;padding:9px 12px;border-radius:9px;border:1px solid var(--input-bd);background:var(--input);color:var(--text);font-size:clamp(13px,1.3vw,15px);font-weight:600;font-family:var(--font);outline:none;transition:border-color .15s;letter-spacing:-.2px;}
+.memo-title:focus{border-color:var(--pri);background:var(--pri-vlt);}
+.memo-title::placeholder{color:var(--muted);font-weight:500;}
+.memo-head-btns{display:flex;gap:6px;flex-shrink:0;}
+.memo-hbtn{padding:9px 14px;border-radius:9px;border:1px solid var(--pri);background:var(--pri);color:#fff;font-size:clamp(11px,1.1vw,13px);font-weight:700;cursor:pointer;font-family:var(--font);transition:all .15s;letter-spacing:-.2px;}
+.memo-hbtn:hover{filter:brightness(1.05);transform:translateY(-1px);}
+.memo-hbtn:active{transform:translateY(0);}
+.memo-hbtn.memo-list-btn{background:var(--card);color:var(--pri);border-color:var(--pri-lt);}
+.memo-hbtn.memo-list-btn:hover{background:var(--pri-vlt);}
+.memo-toolbar{display:flex;gap:6px;align-items:center;padding:6px 8px;background:var(--shell);border-radius:10px;border:1px solid var(--card-bd);flex-wrap:wrap;}
+.memo-tbtn{display:inline-flex;align-items:center;gap:5px;padding:6px 10px;border-radius:7px;border:1px solid var(--card-bd);background:var(--card);color:var(--sub);font-size:11px;font-weight:600;cursor:pointer;font-family:var(--font);transition:all .15s;}
+.memo-tbtn:hover{color:var(--pri);border-color:var(--pri-lt);background:var(--pri-vlt);}
+.memo-tbtn-ico{font-size:13px;font-weight:700;line-height:1;color:var(--pri);}
+.memo-tbtn-lbl{letter-spacing:-.2px;}
+.memo-bullet-wrap{position:relative;}
+.memo-bullet-pop{display:none;position:absolute;top:calc(100% + 6px);left:0;background:var(--card);border:1px solid var(--card-bd);border-radius:9px;box-shadow:0 6px 18px rgba(0,0,0,.12);padding:4px;min-width:130px;z-index:30;}
+.memo-bullet-pop.on{display:flex;flex-direction:column;gap:2px;}
+.memo-bullet-opt{display:flex;align-items:center;gap:8px;padding:7px 10px;border:none;background:transparent;color:var(--text);font-size:11px;font-weight:600;cursor:pointer;font-family:var(--font);border-radius:6px;text-align:left;transition:background .15s;}
+.memo-bullet-opt:hover{background:var(--pri-vlt);color:var(--pri);}
+.memo-bopt-ico{display:inline-flex;align-items:center;justify-content:center;width:18px;color:var(--pri);font-weight:700;flex-shrink:0;}
+.memo-status{margin-left:auto;font-size:10px;color:var(--muted);font-weight:500;letter-spacing:-.2px;transition:opacity .25s;}
+.memo-status.flash{color:var(--pri);font-weight:700;}
+.memo-body{flex:1;min-height:200px;padding:14px 16px;border-radius:11px;border:1px solid var(--input-bd);background:var(--input);color:var(--text);font-size:14px;line-height:1.7;font-family:var(--font);outline:none;resize:none;transition:border-color .15s;letter-spacing:-.1px;}
+.memo-body:focus{border-color:var(--pri);background:var(--card);}
+.memo-body::placeholder{color:var(--muted);}
+.memo-body.font-sm{font-size:12px;line-height:1.65;}
+.memo-body.font-md{font-size:14px;line-height:1.7;}
+.memo-body.font-lg{font-size:17px;line-height:1.75;}
+
+/* ── Memo list modal ── */
+.memo-list-modal{max-width:520px;}
+.memo-list-search-wrap{margin:6px 0 10px;}
+.memo-list-search{width:100%;padding:9px 12px;border-radius:9px;border:1px solid var(--input-bd);background:var(--input);color:var(--text);font-size:12px;font-family:var(--font);outline:none;transition:border-color .15s;}
+.memo-list-search:focus{border-color:var(--pri);background:var(--pri-vlt);}
+.memo-list-search::placeholder{color:var(--muted);}
+.memo-list{display:flex;flex-direction:column;gap:6px;max-height:50vh;overflow-y:auto;padding:2px;margin-bottom:10px;}
+.memo-item{display:flex;flex-direction:column;gap:3px;padding:10px 12px;border-radius:9px;border:1px solid var(--card-bd);background:var(--card);cursor:pointer;transition:all .15s;}
+.memo-item:hover{border-color:var(--pri-lt);background:var(--pri-vlt);transform:translateX(2px);}
+.memo-item.active{border-color:var(--pri);background:var(--pri-vlt);}
+.memo-item-row{display:flex;align-items:center;gap:8px;}
+.memo-item-title{flex:1;min-width:0;font-size:13px;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;letter-spacing:-.2px;}
+.memo-item-untitled{color:var(--muted);font-style:italic;font-weight:500;}
+.memo-item-del{background:none;border:none;color:var(--muted);font-size:14px;cursor:pointer;padding:2px 6px;border-radius:5px;flex-shrink:0;transition:all .15s;}
+.memo-item-del:hover{color:#e57373;background:rgba(229,115,115,.08);}
+.memo-item-meta{display:flex;gap:8px;font-size:10px;color:var(--muted);font-weight:500;}
+.memo-item-time{color:var(--sub);}
+.memo-item-snip{font-size:11px;color:var(--sub);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.4;}
+.memo-list-empty{text-align:center;color:var(--muted);padding:30px 12px;font-size:12px;}
+
+/* ── Clock card (small, timer view only) ── */
+.clock-card{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:clamp(12px,1.4vw,18px);}
+.ck-date{font-size:clamp(11px,1.2vw,15px);font-weight:600;color:var(--sub);}
+.ck-row{display:flex;align-items:baseline;gap:6px;}
+.ck-ap{font-size:clamp(11px,1.1vw,14px);color:var(--pri);font-weight:700;}
+.ck-time{font-size:clamp(20px,3vw,36px);font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:2px;color:var(--text);}
+
+/* ── Stats full-view card ── */
+.stats-view{padding:clamp(16px,2vw,28px);overflow-y:auto;}
+.stats-view .stats-top{display:grid;grid-template-columns:repeat(3,1fr);gap:clamp(8px,1vw,14px);margin-bottom:clamp(16px,2vw,24px);}
+.stats-view .stats-top .stat-card{padding:clamp(14px,1.4vw,20px) clamp(8px,1vw,14px);}
+.stats-view .stats-top .stat-val{font-size:clamp(28px,3.4vw,44px);}
+.stats-view .stats-top .stat-lbl{font-size:clamp(11px,1vw,13px);}
+.stats-view .stats-top .stat-sub{font-size:clamp(10px,.9vw,12px);}
+.stats-view .stats-sec{margin-bottom:clamp(14px,1.6vw,20px);}
+.stats-view .stats-bars{height:clamp(80px,10vw,140px);}
+.stats-view .stats-per-todo{max-height:none;}
+.stats-sec-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;}
+
+/* ── Advanced settings (collapsible) ── */
+.adv-sec{margin-top:clamp(18px,2vw,28px);padding-top:clamp(12px,1.4vw,18px);border-top:1px solid var(--card-bd);}
+.adv-head{display:flex;align-items:center;gap:8px;font-size:clamp(12px,1.1vw,14px);font-weight:700;color:var(--sub);cursor:pointer;user-select:none;padding:6px 0;transition:color .15s;}
+.adv-head:hover{color:var(--text);}
+.adv-chev{display:inline-block;font-size:10px;transition:transform .2s;color:var(--muted);}
+.adv-sec.open .adv-chev{transform:rotate(90deg);}
+.adv-body{display:flex;flex-direction:column;gap:14px;padding-top:0;max-height:0;overflow:hidden;opacity:0;transition:max-height .35s ease,opacity .25s,padding-top .35s;}
+.adv-sec.open .adv-body{max-height:800px;opacity:1;padding-top:10px;}
+.adv-group{display:flex;flex-direction:column;gap:6px;}
+.adv-lbl{font-size:11px;font-weight:700;color:var(--sub);letter-spacing:.3px;}
+.adv-chips{display:flex;gap:5px;flex-wrap:wrap;}
+.adv-chip{padding:6px 14px;border-radius:10px;border:1.5px solid var(--input-bd);background:var(--input);color:var(--sub);font-size:11px;font-weight:600;cursor:pointer;font-family:var(--font);transition:all .15s;}
+.adv-chip:hover{border-color:var(--pri);color:var(--pri);}
+.adv-chip.on{background:var(--pri);color:#fff;border-color:var(--pri);}
+/* Checkbox-style adv options (for multi-select like view composition) */
+.adv-checks{display:flex;gap:6px;flex-wrap:wrap;}
+.adv-check{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:10px;border:1.5px solid var(--input-bd);background:var(--input);color:var(--sub);font-size:11px;font-weight:600;cursor:pointer;font-family:var(--font);transition:all .15s;user-select:none;}
+.adv-check:hover{border-color:var(--pri);}
+.adv-check input{width:13px;height:13px;accent-color:var(--pri);cursor:pointer;margin:0;}
+.adv-check input:checked + span{color:var(--pri);}
+/* Priority editor in advanced settings */
+.pri-editor{display:flex;flex-direction:column;gap:6px;}
+.pri-editor-row{display:flex;align-items:center;gap:6px;}
+.pri-editor-color{width:28px;height:28px;border:1.5px solid var(--input-bd);border-radius:8px;cursor:pointer;padding:0;background:none;overflow:hidden;flex-shrink:0;}
+.pri-editor-color input[type="color"]{width:36px;height:36px;border:none;padding:0;margin:-4px;cursor:pointer;}
+.pri-editor-name{flex:1;padding:5px 10px;border:1.5px solid var(--input-bd);border-radius:8px;background:var(--input);color:var(--text);font-size:11px;font-family:var(--font);outline:none;min-width:0;transition:border-color .15s;}
+.pri-editor-name:focus{border-color:var(--pri);}
+.pri-editor-del{background:none;border:none;color:var(--muted);font-size:16px;cursor:pointer;padding:2px 4px;line-height:1;transition:color .15s;flex-shrink:0;}
+.pri-editor-del:hover{color:#e57373;}
+.pri-add-btn{align-self:flex-start;margin-top:2px;}
+
+/* ── Theme dots ── */
+.themes{display:flex;gap:7px;justify-content:center;padding:9px 0 3px;align-items:center;}
+.td{width:18px;height:18px;border-radius:50%;cursor:pointer;border:2.5px solid transparent;box-shadow:0 1px 3px rgba(0,0,0,.1);transition:all .25s;}
+.td:hover{transform:scale(1.15);}
+.td.on{border-color:var(--text);transform:scale(1.1);}
+.td.g{background:#4a8f6b;}
+.td.b{background:#4a5f8f;}
+.td.c{background:#c45c4a;}
+.td.lv{background:#b8a5d9;}
+.td.pk{background:#e89aa8;}
+.td.nv{background:#f4e8c1;border:1.5px solid #c8bc9c;}
+.th-more-wrap{position:relative;}
+.help-btn{width:18px;height:18px;border-radius:50%;border:2px solid var(--muted);background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:var(--muted);line-height:1;transition:all .25s;font-family:var(--font);margin-left:2px;padding:0;}
+.help-btn:hover{border-color:var(--pri);color:var(--pri);transform:scale(1.15);}
+.th-more{width:18px;height:18px;border-radius:50%;border:2px dashed var(--muted);background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:var(--muted);line-height:1;transition:all .25s;font-family:var(--font);}
+.th-more:hover{border-color:var(--pri);color:var(--pri);transform:scale(1.15);}
+.th-more.open{border-color:var(--pri);color:var(--pri);}
+.th-pop{display:none;position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);background:var(--card);border:1px solid var(--card-bd);border-radius:10px;padding:8px 10px;box-shadow:0 4px 16px rgba(0,0,0,.1);z-index:60;gap:7px;flex-wrap:wrap;justify-content:center;min-width:120px;}
+.th-pop.open{display:flex;}
+.th-pop::after{content:'';position:absolute;top:100%;left:50%;transform:translateX(-50%);border:6px solid transparent;border-top-color:var(--card-bd);}
+.th-pop .td{flex-shrink:0;}
+
+/* ── Modal ── */
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.3);z-index:100;display:none;align-items:center;justify-content:center;backdrop-filter:blur(4px);padding:16px;}
+.overlay.on{display:flex;}
+.modal{background:var(--card);border-radius:16px;padding:24px 28px;box-shadow:0 12px 48px rgba(0,0,0,.15);width:100%;max-width:340px;position:relative;}
+.m-close{position:absolute;top:10px;right:10px;width:28px;height:28px;border:none;background:transparent;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;border-radius:50%;display:flex;align-items:center;justify-content:center;font-family:var(--font);padding:0;transition:all .15s;}
+.m-close:hover{background:var(--input);color:var(--text);}
+.modal h2{font-size:16px;font-weight:800;text-align:center;margin-bottom:14px;}
+.m-sec{margin-bottom:14px;}
+.m-warn{font-size:11px;color:var(--rest);background:rgba(232,164,76,.1);border-left:3px solid var(--rest);padding:8px 12px;border-radius:4px;margin-bottom:14px;line-height:1.4;}
+.m-warn b{color:var(--text);font-weight:700;}
+.m-lbl{font-size:11px;font-weight:700;color:var(--sub);margin-bottom:5px;letter-spacing:.3px;}
+.m-row{display:flex;align-items:center;gap:7px;}
+.m-inp{width:56px;text-align:center;padding:7px;border-radius:10px;border:1px solid var(--input-bd);background:var(--input);color:var(--text);font-size:15px;font-weight:600;outline:none;font-family:var(--font);}
+.m-inp:focus{border-color:var(--pri);}
+.m-unit{font-size:12px;color:var(--sub);}
+.m-btns{display:flex;gap:7px;margin-top:18px;}
+.m-btn{flex:1;padding:9px;border-radius:10px;border:none;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font);transition:all .2s;}
+.m-btn.ok{background:var(--pri);color:#fff;}
+.m-btn.ok:hover{filter:brightness(1.1);}
+.m-btn.cancel{background:var(--input);color:var(--sub);border:1px solid var(--input-bd);}
+.m-btn.cancel:hover{background:var(--hover);}
+.m-btn.def{background:transparent;color:var(--muted);border:1px solid var(--card-bd);}
+.m-btn.def:hover{color:var(--sub);border-color:var(--sub);}
+.pomo-sec{margin-top:14px;padding-top:12px;border-top:1px solid var(--card-bd);}
+.pomo-btn{width:100%;padding:9px;border-radius:10px;border:2px solid var(--pri);background:var(--pri-vlt);color:var(--pri);font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font);transition:all .2s;}
+.pomo-btn:hover{background:var(--pri);color:#fff;}
+.pomo-btn.stop{border-color:#e57373;color:#e57373;background:rgba(229,115,115,.05);}
+.pomo-btn.stop:hover{background:#e57373;color:#fff;}
+
+/* ── Toast ── */
+/* ── Alert modal (timer done / rest start) ── */
+.toast{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:200;display:none;align-items:center;justify-content:center;backdrop-filter:blur(6px);padding:20px;opacity:0;transition:opacity .3s;}
+.toast.on{display:flex;opacity:1;}
+.toast-box{background:var(--card);border:3px solid var(--pri);border-radius:20px;padding:40px 48px;text-align:center;box-shadow:0 16px 64px rgba(0,0,0,.3);max-width:440px;width:90%;transform:scale(.85);transition:transform .4s cubic-bezier(.34,1.56,.64,1);}
+.toast.on .toast-box{transform:scale(1);}
+.toast h3{font-size:clamp(22px,2.8vw,32px);font-weight:800;color:var(--pri);margin-bottom:8px;line-height:1.2;}
+.toast p{font-size:clamp(13px,1.3vw,16px);color:var(--sub);line-height:1.5;}
+.toast-btns{display:flex;gap:10px;justify-content:center;margin-top:24px;}
+.toast button{background:var(--pri);color:#fff;border:none;padding:12px 28px;border-radius:12px;font-size:clamp(13px,1.3vw,15px);font-weight:700;cursor:pointer;font-family:var(--font);min-width:110px;transition:filter .2s,transform .1s;}
+.toast-restart{background:transparent !important;color:var(--pri) !important;border:2px solid var(--pri) !important;}
+.toast-restart:hover{background:var(--pri-vlt) !important;}
+.toast button:hover{filter:brightness(1.1);}
+.toast button:active{transform:scale(.96);}
+.toast.glow .toast-box{animation:glow 1.5s ease-in-out infinite alternate;}
+@keyframes glow{from{box-shadow:0 16px 64px rgba(0,0,0,.25)}to{box-shadow:0 16px 80px var(--pri-glow),0 0 0 6px var(--pri-lt)}}
+
+/* ── Hide feature & Data management ── */
+.todo-head{display:flex;align-items:center;gap:6px;margin-bottom:6px;}
+.todo-head-spacer{width:22px;flex-shrink:0;}
+.todo-head .sec-hd{flex:1;margin-bottom:0;}
+.hide-btn{background:none;border:1.5px solid var(--card-bd);color:var(--muted);cursor:pointer;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;transition:all .2s;padding:0;flex-shrink:0;}
+.hide-btn:hover{color:var(--pri);border-color:var(--pri);background:var(--pri-vlt);}
+.hide-btn svg{width:11px;height:11px;fill:currentColor;}
+/* ── Hide overlay (slide-down animation) ──
+   The overlay is absolutely positioned over the todo card. In its resting state
+   it sits above the card (translateY(-100%)). When .hidden is added to the card,
+   it slides down to cover everything. */
+.hide-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;cursor:pointer;background:var(--input);border:2px dashed var(--card-bd);border-radius:14px;color:var(--sub);font-weight:600;transition:transform .5s cubic-bezier(.4,0,.2,1),opacity .3s;user-select:none;z-index:5;transform:translateY(-100%);opacity:0;pointer-events:none;}
+.hide-overlay:hover{background:var(--hover);border-color:var(--pri);color:var(--pri);}
+.hide-overlay-lock{font-size:28px;opacity:.5;}
+.hide-overlay-msg{font-size:13px;}
+.hide-overlay-hint{font-size:10px;opacity:.7;font-weight:500;color:var(--muted);}
+.todo-card.hidden .hide-overlay{transform:translateY(0);opacity:1;pointer-events:auto;}
+/* Dim the underlying content slightly while the overlay is sliding in, so the
+   transition feels like the todos fading back rather than staying fully visible. */
+.todo-card .todo-head,
+.todo-card .prog-lbl,
+.todo-card .prog-wrap,
+.todo-card .celebrate,
+.todo-card .pri-row,
+.todo-card .t-row,
+.todo-card .t-list,
+.todo-card .filters{transition:opacity .3s;}
+.todo-card.hidden .prog-lbl,
+.todo-card.hidden .prog-wrap,
+.todo-card.hidden .celebrate,
+.todo-card.hidden .pri-row,
+.todo-card.hidden .t-row,
+.todo-card.hidden .t-list,
+.todo-card.hidden .filters{opacity:.3;}
+.data-sec{margin-top:14px;padding-top:12px;border-top:1px solid var(--card-bd);}
+.m-data-btns{display:flex;gap:7px;margin-top:4px;}
+.m-data-btn{flex:1;padding:7px;border-radius:9px;border:1px solid var(--input-bd);background:var(--input);color:var(--sub);font-size:11px;font-weight:700;cursor:pointer;font-family:var(--font);transition:all .2s;}
+.m-data-btn:hover{color:var(--pri);border-color:var(--pri);background:var(--pri-vlt);}
+.m-data-btn.danger{color:var(--muted);}
+.m-data-btn.danger:hover{color:#e57373;border-color:#e57373;background:rgba(229,115,115,.06);}
+.m-data-note{font-size:10px;color:var(--muted);margin-top:7px;line-height:1.5;}
+
+/* ── Mute toggle button ── */
+.mute-toggle{display:flex;align-items:center;gap:10px;width:100%;padding:10px 14px;border:1.5px solid var(--input-bd);border-radius:10px;background:var(--input);color:var(--text);font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font);transition:all .2s;}
+.mute-toggle:hover{border-color:var(--pri);}
+.mute-toggle[aria-pressed="true"]{background:var(--pri);color:#fff;border-color:var(--pri);box-shadow:0 2px 8px var(--pri-glow);}
+.mute-ico{width:18px;height:18px;flex-shrink:0;background-repeat:no-repeat;background-position:center;background-size:contain;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23666'%3E%3Cpath d='M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z'/%3E%3C/svg%3E");}
+.mute-toggle[aria-pressed="true"] .mute-ico{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='white'%3E%3Cpath d='M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.17v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z'/%3E%3C/svg%3E");}
+.mute-txt{flex:1;text-align:left;}
+.mute-state{font-size:10px;font-weight:700;opacity:.8;padding:2px 8px;border-radius:8px;background:rgba(0,0,0,.08);}
+.mute-toggle[aria-pressed="true"] .mute-state{background:rgba(255,255,255,.25);}
+
+/* ── Todo item extras ── */
+.ti-edit{background:none;border:none;color:var(--muted);font-size:12px;cursor:pointer;padding:0 2px;opacity:.6;transition:opacity .15s,color .15s;line-height:1;margin-top:2px;}
+.ti-edit:hover{opacity:1;color:var(--pri);}
+/* ── Editor UI (triggered by pencil icon) ──
+   When .ti has .editing class, hide its regular children and show the editor panel. */
+.ti.editing{flex-wrap:wrap;align-items:stretch;padding:10px 12px;background:var(--pri-vlt);border-left-color:var(--pri);cursor:default;transition:background .25s,padding .25s;}
+.ti.editing > *:not(.ti-editor){display:none !important;}
+.ti-editor{display:flex;flex-direction:column;gap:7px;width:100%;opacity:0;transform:translateY(-10px);transition:opacity .25s ease-out,transform .25s cubic-bezier(.4,0,.2,1);}
+.ti-editor.show{opacity:1;transform:translateY(0);}
+.ti-editor.closing{opacity:0;transform:translateY(-8px);transition:opacity .15s ease-in,transform .15s ease-in;}
+.ti-editor-row{display:flex;gap:5px;align-items:center;}
+.ti-editor-text{flex:1;padding:6px 10px;border-radius:8px;border:1px solid var(--pri);background:var(--card);color:var(--text);font-size:clamp(11px,1.05vw,13px);outline:none;font-family:var(--font);min-width:0;}
+.ti-editor-save{padding:6px 14px;border:none;border-radius:8px;background:var(--pri);color:#fff;font-size:clamp(10px,1vw,12px);font-weight:700;cursor:pointer;font-family:var(--font);flex-shrink:0;}
+.ti-editor-save:hover{filter:brightness(1.1);}
+.ti-editor-cancel{padding:4px 9px;border:1px solid var(--input-bd);border-radius:8px;background:var(--input);color:var(--muted);font-size:14px;font-weight:700;cursor:pointer;font-family:var(--font);line-height:1;flex-shrink:0;}
+.ti-editor-cancel:hover{color:#e57373;border-color:#e57373;}
+.ti-editor-chips{display:flex;flex-wrap:wrap;align-items:center;gap:4px;}
+.ti-editor-lbl{font-size:10px;font-weight:700;color:var(--sub);letter-spacing:.3px;min-width:26px;margin-right:4px;}
+.ti-chip{padding:4px 10px;border-radius:10px;border:1.5px solid var(--card-bd);background:var(--card);color:var(--sub);font-size:10px;font-weight:600;cursor:pointer;font-family:var(--font);transition:all .15s;}
+.ti-chip:hover{border-color:var(--pri);color:var(--pri);}
+.ti-chip.on{background:var(--pri);color:#fff;border-color:var(--pri);box-shadow:0 1px 4px var(--pri-glow);}
+.ti-editor-date-hidden{position:absolute;opacity:0;pointer-events:none;width:1px;height:1px;}
+.ti-editor-duetext{gap:5px;}
+.ti-editor-duetext-inp{flex:1;min-width:0;padding:4px 9px;border-radius:7px;border:1px solid var(--input-bd);background:var(--card);color:var(--text);font-size:11px;outline:none;font-family:var(--font);}
+.ti-editor-duetext-inp::placeholder{color:var(--muted);font-size:10px;}
+.ti-editor-duetext-inp:focus{border-color:var(--pri);}
+.ti-editor-duetext-inp.err{border-color:#e57373;}
+.ti-editor-duetext-btn{padding:4px 11px;border:none;border-radius:7px;background:var(--pri);color:#fff;font-size:10px;font-weight:700;cursor:pointer;font-family:var(--font);flex-shrink:0;}
+.ti-editor-duetext-btn:hover{filter:brightness(1.1);}
+.ti-editor-duetext-err{font-size:10px;color:#c44a4a;}
+.ti-pomo-badge{font-size:9px;font-weight:700;padding:2px 5px;border-radius:6px;background:rgba(231,111,81,.12);color:#c75a42;flex-shrink:0;letter-spacing:.2px;}
+.ti-pomo-badge::before{content:'\01F345';font-size:8px;margin-right:2px;}
+.ti-due{font-size:8px;font-weight:700;padding:2px 5px;border-radius:6px;flex-shrink:0;background:rgba(74,95,143,.1);color:#5a6f95;}
+.ti-due.overdue{background:rgba(229,115,115,.15);color:#c44a4a;}
+.ti-due.today{background:rgba(196,98,61,.15);color:#b54f28;}
+.ti-recur{font-size:8px;font-weight:700;padding:2px 5px;border-radius:6px;flex-shrink:0;background:rgba(144,168,154,.15);color:#5e7a6e;}
+.ti-recur::before{content:'\21BB';margin-right:2px;font-weight:bold;}
+.ti.active-pomo{background:var(--pri-vlt);border-left-color:var(--pri);box-shadow:inset 2px 0 0 var(--pri);}
+.ti-pri-opt.pomo-start{border-left:1px solid var(--card-bd);margin-left:2px;padding-left:10px;color:var(--pri);}
+.ti-pri-opt.pomo-start::before{content:'\01F345 ';margin-right:2px;}
+
+/* ── Active-task badge in pomodoro header ── */
+.active-task-row{display:none;align-items:center;gap:6px;font-size:11px;color:var(--sub);padding:3px 10px;border-radius:14px;background:var(--pri-vlt);border:1px solid var(--pri-lt);max-width:280px;}
+.active-task-row.on{display:flex;}
+.active-task-row::before{content:'\01F345';font-size:10px;}
+.active-task-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;color:var(--pri);}
+.active-task-clear{background:none;border:none;color:var(--muted);cursor:pointer;padding:0 2px;font-size:14px;line-height:1;}
+.active-task-clear:hover{color:#e57373;}
+
+/* ── Stats modal ── */
+
+/* ── Help modal ── */
+.help-modal{max-width:500px;max-height:85vh;overflow-y:auto;}
+.help-sec{margin-bottom:14px;}
+.help-h{font-size:12px;font-weight:800;color:var(--pri);margin-bottom:6px;letter-spacing:.2px;}
+.help-list{list-style:none;padding:0;margin:0;}
+.help-list li{font-size:11px;color:var(--sub);line-height:1.55;padding:3px 0 3px 14px;position:relative;}
+.help-list li::before{content:'\25CB';position:absolute;left:2px;top:3px;font-size:8px;color:var(--muted);}
+.help-list b{color:var(--text);font-weight:700;}
+.help-list code{background:var(--input);padding:1px 6px;border-radius:4px;font-size:10.5px;font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--pri);}
+.stats-top{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px;}
+.stat-card{background:var(--input);border:1px solid var(--input-bd);border-radius:10px;padding:10px 6px;text-align:center;}
+.stat-lbl{font-size:10px;font-weight:600;color:var(--sub);letter-spacing:.3px;}
+.stat-val{font-size:24px;font-weight:700;color:var(--pri);font-variant-numeric:tabular-nums;margin:2px 0;}
+.stat-sub{font-size:9px;color:var(--muted);font-weight:500;min-height:11px;}
+.stats-sec{margin-bottom:14px;}
+.stats-bars{display:flex;align-items:flex-end;justify-content:space-between;gap:2px;height:80px;background:var(--input);border-radius:8px;padding:8px 6px;}
+.stat-bar{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;justify-content:flex-end;height:100%;position:relative;}
+.stat-bar-fill{width:100%;background:var(--pri);border-radius:3px 3px 0 0;min-height:2px;transition:height .3s;}
+.stat-bar-fill.empty{background:var(--card-bd);min-height:2px;}
+.stat-bar-fill.today{background:var(--pri);}
+.stat-bar-day{font-size:8px;color:var(--muted);font-weight:600;}
+.stat-bar-val{font-size:9px;color:var(--sub);font-weight:700;font-variant-numeric:tabular-nums;position:absolute;top:-12px;}
+.stats-per-todo{display:flex;flex-direction:column;gap:4px;max-height:160px;overflow-y:auto;}
+.stats-per-todo::-webkit-scrollbar{width:3px;}
+.stats-per-todo::-webkit-scrollbar-thumb{background:var(--input-bd);border-radius:2px;}
+.stat-todo{display:flex;align-items:center;gap:8px;padding:5px 8px;background:var(--input);border-radius:7px;font-size:11px;}
+.stat-todo-t{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);}
+.stat-todo.done .stat-todo-t{text-decoration:line-through;color:var(--muted);}
+.stat-todo-bar-wrap{flex:1;height:4px;background:var(--track);border-radius:2px;overflow:hidden;max-width:80px;}
+.stat-todo-bar{height:100%;background:var(--pri);border-radius:2px;}
+.stat-todo-count{font-size:10px;font-weight:700;color:var(--pri);font-variant-numeric:tabular-nums;min-width:22px;text-align:right;}
+.stats-empty{text-align:center;color:var(--muted);padding:14px 0;font-size:11px;}
+
+/* ── Drag-and-drop handle ── */
+.ti-n{cursor:grab;}
+.ti-n:active{cursor:grabbing;}
+.ti.dragging{opacity:.4;transform:scale(.97);transition:opacity .15s,transform .15s;}
+.ti.drag-over{border-top:2.5px solid var(--pri);margin-top:-1px;background:var(--pri-vlt);transition:background .1s;}
+
+/* ── Responsive ──
+   Typography scales fluidly via clamp() on the base rules, so media queries here
+   only handle structural/layout changes (grid columns, padding, etc.), not font sizes. */
+@media(max-width:820px){
+  .grid{grid-template-columns:1fr 1fr;min-height:auto;}
+  .timer-card{grid-row:auto;grid-column:1/3;}
+}
+@media(max-width:660px){
+  body{padding:8px;align-items:flex-start;}
+  .shell{border-radius:16px;padding:12px;}
+  .grid{grid-template-columns:1fr;gap:10px;min-height:auto;}
+  .timer-card{grid-column:auto;}
+  .card{padding:16px;border-radius:12px;}
+  .presets{max-width:100%;}
+  .t-list{max-height:180px;}
+  /* Larger minimums on small screens so the timer is still readable */
+  .ring-wrap{width:min(86vw,320px);}
+  /* Touch targets — roughly 40×40 to hit Apple/Google accessibility recs.
+     We grow via padding (not size) so the visual density is preserved. */
+  .ti-edit,.ti-del,.ti-sub{padding:8px 10px;font-size:16px;}
+  .ti-pri-btn{padding:6px 8px;font-size:12px;}
+  .ti-n{width:26px;height:26px;font-size:11px;}
+  .hide-btn{padding:8px;}
+  .cb{width:44px;height:44px;}
+  .cb svg{width:18px;height:18px;}
+  .help-btn{width:24px;height:24px;font-size:13px;}
+  .th-more,.td{width:20px;height:20px;}
+}
+@media(max-width:420px){
+  .shell{padding:8px;}
+  .card{padding:12px;border-radius:10px;}
+  .presets{gap:3px;}
+  .custom{flex-wrap:wrap;justify-content:center;}
+  .clock-card{padding:10px;}
+  .modal{padding:20px 22px;}
+}
+</style>
+</head>
+<body>
+
+<div class="shell">
+<!-- Global tabs: Timer+Todo / Stats -->
+<nav class="view-tabs" role="tablist">
+  <button class="view-tab on" data-view="timer" role="tab" aria-selected="true">타이머 &middot; 할 일</button>
+  <button class="view-tab" data-view="memo" role="tab" aria-selected="false">메모</button>
+  <button class="view-tab" data-view="stats" role="tab" aria-selected="false">통계</button>
+</nav>
+
+<div class="view-panel on" id="viewTimer">
+<div class="grid">
+
+  <!-- Timer -->
+  <div class="card timer-card">
+    <div class="pomo-badge" id="pomoBadge"><span id="pomoText">집중 중 (1/4)</span></div>
+    <div class="active-task-row" id="activeTaskRow">
+      <span class="active-task-label" id="activeTaskLabel"></span>
+      <button class="active-task-clear" id="activeTaskClear" title="현재 작업 해제" aria-label="현재 작업 해제">&times;</button>
+    </div>
+    <div class="msg" id="msg" contenteditable="false" title="클릭하여 수정" spellcheck="false">Great things take time.</div>
+
+    <div class="ring-wrap">
+      <svg viewBox="0 0 340 220" aria-hidden="true">
+        <path class="ring-bg" d="M170,20 L280,20 A40,40 0 0,1 320,60 L320,160 A40,40 0 0,1 280,200 L60,200 A40,40 0 0,1 20,160 L20,60 A40,40 0 0,1 60,20 Z"/>
+        <path class="ring-fg" id="ringFg" d="M170,20 L280,20 A40,40 0 0,1 320,60 L320,160 A40,40 0 0,1 280,200 L60,200 A40,40 0 0,1 20,160 L20,60 A40,40 0 0,1 60,20 Z"/>
+      </svg>
+      <div class="ring-center">
+        <div class="time">
+          <div class="time-block"><div class="time-num" id="tH">00</div><div class="time-label">H</div></div>
+          <div class="time-sep">:</div>
+          <div class="time-block"><div class="time-num" id="tM">25</div><div class="time-label">M</div></div>
+          <div class="time-sep">:</div>
+          <div class="time-block"><div class="time-num" id="tS">00</div><div class="time-label">S</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="ctrls">
+      <button class="cb" id="btnPlay" title="시작"><svg viewBox="0 0 24 24"><path id="playIco" d="M8 5v14l11-7z"/></svg></button>
+      <button class="cb" id="btnReset" title="초기화"><svg viewBox="0 0 24 24"><path d="M17.65 6.35A7.96 7.96 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg></button>
+      <button class="cb rest-h" id="btnRest" title="휴식"><svg viewBox="0 0 24 24"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg></button>
+      <button class="cb cb-text" id="btnMinus5" title="5분 줄이기" aria-label="5분 줄이기">&minus;5</button>
+      <button class="cb cb-text" id="btnPlus5" title="5분 늘리기" aria-label="5분 늘리기">+5</button>
+      <button class="cb set-h" id="btnSet" title="설정"><svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54A.48.48 0 0014 2.35h-3.84a.48.48 0 00-.48.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 00-.59.22L2.74 8.87a.48.48 0 00.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.57 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 00-.12-.61l-2.03-1.58zM12 15.6A3.6 3.6 0 1115.6 12 3.6 3.6 0 0112 15.6z"/></svg></button>
+    </div>
+
+    <div class="presets" id="presets">
+      <button class="pre" data-m="5">5분</button>
+      <button class="pre" data-m="10">10분</button>
+      <button class="pre" data-m="15">15분</button>
+      <button class="pre on" data-m="25">25분</button>
+      <button class="pre" data-m="30">30분</button>
+      <button class="pre" data-m="40">40분</button>
+      <button class="pre" data-m="50">50분</button>
+      <button class="pre" data-m="60">60분</button>
+    </div>
+    <div class="custom">
+      <b>직접입력</b>
+      <input class="ci" id="cH" type="number" min="0" max="23" placeholder="0" autocomplete="off" inputmode="numeric">
+      <span>시</span>
+      <input class="ci" id="cM" type="number" min="0" max="59" placeholder="0" autocomplete="off" inputmode="numeric">
+      <span>분</span>
+      <input class="ci" id="cS" type="number" min="0" max="59" placeholder="0" autocomplete="off" inputmode="numeric">
+      <span>초</span>
+      <button class="apply" id="applyCustom">확인</button>
+    </div>
+  </div>
+
+  <!-- Todo -->
+  <div class="card todo-card">
+    <div class="todo-head">
+      <div class="todo-head-spacer"></div>
+      <div class="sec-hd">해야 할 일들</div>
+      <button class="hide-btn" id="hideBtn" title="할 일 가리기" aria-label="할 일 가리기">
+        <svg viewBox="0 0 24 24"><path id="hideIco" d="M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z"/></svg>
+      </button>
+    </div>
+    <div class="prog-lbl" id="progLbl">0%</div>
+    <div class="prog-wrap"><div class="prog-bar" id="progBar"></div></div>
+    <div class="celebrate" id="celeb"></div>
+
+    <div class="pri-row" id="priRow">
+      <span>우선도</span>
+      <!-- Populated dynamically by renderPriUI() -->
+    </div>
+    <div class="t-row">
+      <input class="t-inp" id="tInp" placeholder="할 일 입력 (예: 회의 !당장)" maxlength="200" autocomplete="off">
+      <button class="t-btn" id="tAdd">추가</button>
+    </div>
+    <div class="tag-guide" id="tagGuide">
+      <span class="tag-guide-toggle" id="tagGuideToggle">💡 입력 도움말</span>
+      <div class="tag-guide-body" id="tagGuideBody">
+        <span><b>!오늘</b> <b>!내일</b> <b>!모레</b> <b>!12/25</b> — 마감일</span>
+        <span><b>@매일</b> <b>@매주</b> <b>@매월</b> — 반복</span>
+      </div>
+    </div>
+    <div class="undo-bar" id="undoBar">
+      <span>삭제됨</span>
+      <button id="undoBtn">되돌리기</button>
+    </div>
+    <ul class="t-list" id="tList"></ul>
+
+    <div class="t-search-wrap">
+      <span class="t-search-ico">&#x1F50D;</span>
+      <input class="t-search" id="tSearch" type="search" placeholder="할 일 검색..." autocomplete="off">
+    </div>
+    <div class="filters" id="filters">
+      <button class="ft on" data-f="all">전체 <span class="fc" id="cAll">0</span></button>
+      <button class="ft" data-f="undone">미완료 <span class="fc" id="cUnd">0</span></button>
+      <!-- Priority filters populated dynamically by renderPriUI() -->
+    </div>
+    <div class="hide-overlay" id="hideOverlay">
+      <div class="hide-overlay-lock">&#x1F512;</div>
+      <div class="hide-overlay-msg">할 일이 가려져 있어요</div>
+      <div class="hide-overlay-hint">클릭하여 보기</div>
+    </div>
+  </div>
+
+  <!-- Small clock (timer view only) -->
+  <div class="card clock-card">
+    <div class="ck-date" id="ckDate"></div>
+    <div class="ck-row">
+      <span class="ck-ap" id="ckAP"></span>
+      <span class="ck-time" id="ckTime">00:00:00</span>
+    </div>
+  </div>
+</div>
+</div><!-- /viewTimer -->
+
+<div class="view-panel" id="viewStats">
+  <div class="card stats-view">
+    <div class="stats-top">
+      <div class="stat-card"><div class="stat-lbl">오늘</div><div class="stat-val" id="vsToday">0</div><div class="stat-sub" id="vsTodayInt">&nbsp;</div></div>
+      <div class="stat-card"><div class="stat-lbl">이번 주</div><div class="stat-val" id="vsWeek">0</div><div class="stat-sub" id="vsWeekInt">&nbsp;</div></div>
+      <div class="stat-card"><div class="stat-lbl">전체</div><div class="stat-val" id="vsTotal">0</div><div class="stat-sub" id="vsTotalInt">&nbsp;</div></div>
+    </div>
+    <div class="stats-sec">
+      <div class="stats-sec-head"><span class="m-lbl">최근 <span id="vsBarsLabel">14</span>일</span></div>
+      <div class="stats-bars" id="vsBars"></div>
+    </div>
+    <div class="stats-sec">
+      <div class="m-lbl">할 일별 뽀모도로</div>
+      <div class="stats-per-todo" id="vsPerTodo"></div>
+    </div>
+
+    <div class="adv-sec">
+      <div class="adv-head">
+        <span class="adv-chev" id="advChev">&#9656;</span>
+        <span>고급 설정</span>
+      </div>
+      <div class="adv-body" id="advBody">
+        <div class="adv-group">
+          <div class="adv-lbl">화면 구성</div>
+          <div class="adv-checks" id="advLayout">
+            <label class="adv-check"><input type="checkbox" data-lay="timer" checked><span>타이머</span></label>
+            <label class="adv-check"><input type="checkbox" data-lay="todo" checked><span>할 일</span></label>
+            <label class="adv-check"><input type="checkbox" data-lay="clock" checked><span>시계</span></label>
+          </div>
+          <div class="m-data-note" style="margin-top:4px;">보이게 할 카드를 선택하세요. 최소 하나는 켜져 있어야 해요.</div>
+        </div>
+        <div class="adv-group">
+          <div class="adv-lbl">다크 모드</div>
+          <div class="adv-chips">
+            <button type="button" class="adv-chip" id="btnDark" data-dark="toggle">꺼짐</button>
+          </div>
+        </div>
+        <div class="adv-group">
+          <div class="adv-lbl">우선도 설정 <span style="font-weight:400;color:var(--muted);font-size:10px;">(2~5개)</span></div>
+          <div class="pri-editor" id="priEditor">
+            <!-- Populated dynamically by renderPriEditor() -->
+          </div>
+          <button type="button" class="adv-chip pri-add-btn" id="priAddBtn">+ 추가</button>
+        </div>
+        <div class="adv-group">
+          <div class="adv-lbl">통계 기간</div>
+          <div class="adv-chips" id="advRange">
+            <button type="button" class="adv-chip" data-range="7">7일</button>
+            <button type="button" class="adv-chip" data-range="14">14일</button>
+            <button type="button" class="adv-chip" data-range="30">30일</button>
+          </div>
+        </div>
+        <div class="adv-group">
+          <div class="adv-lbl">주 시작 요일</div>
+          <div class="adv-chips" id="advWeekStart">
+            <button type="button" class="adv-chip" data-week="0">일요일</button>
+            <button type="button" class="adv-chip" data-week="1">월요일</button>
+          </div>
+        </div>
+        <div class="adv-group">
+          <div class="adv-lbl">알림</div>
+          <button class="mute-toggle" id="btnMute" type="button" aria-pressed="false">
+            <span class="mute-ico" aria-hidden="true"></span>
+            <span class="mute-txt">무음 모드</span>
+            <span class="mute-state" id="muteState">꺼짐</span>
+          </button>
+          <div class="m-data-note" style="margin-top:6px;">켜면 타이머 완료/휴식 알림음이 재생되지 않아요. 팝업은 그대로 표시돼요.</div>
+        </div>
+        <div class="adv-group">
+          <div class="adv-lbl">데이터 관리</div>
+          <div class="m-data-btns">
+            <button class="m-data-btn" id="btnExport">내보내기 (JSON)</button>
+            <button class="m-data-btn danger" id="btnDataReset">모두 삭제</button>
+          </div>
+          <div class="m-data-note">완료한 할 일은 7일 후 자동으로 삭제돼요.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div><!-- /viewStats -->
+
+<div class="view-panel" id="viewMemo">
+  <div class="card memo-card">
+    <div class="memo-head">
+      <input class="memo-title" id="memoTitle" type="text" placeholder="메모 제목" maxlength="80" autocomplete="off">
+      <div class="memo-head-btns">
+        <button class="memo-hbtn" id="memoSave" title="저장">저장</button>
+        <button class="memo-hbtn memo-list-btn" id="memoListBtn" title="메모 목록">목록</button>
+      </div>
+    </div>
+    <div class="memo-toolbar">
+      <button class="memo-tbtn" id="memoFont" title="글씨 크기" aria-label="글씨 크기">
+        <span class="memo-tbtn-ico">A</span><span class="memo-tbtn-lbl" id="memoFontLbl">보통</span>
+      </button>
+      <div class="memo-bullet-wrap">
+        <button class="memo-tbtn" id="memoBulletBtn" title="글머리 기호" aria-label="글머리 기호" aria-haspopup="true" aria-expanded="false">
+          <span class="memo-tbtn-ico">≡</span><span class="memo-tbtn-lbl">글머리</span>
+        </button>
+        <div class="memo-bullet-pop" id="memoBulletPop" role="menu">
+          <button class="memo-bullet-opt" data-mark="dot" role="menuitem"><span class="memo-bopt-ico">&bull;</span> 불렛</button>
+          <button class="memo-bullet-opt" data-mark="circ" role="menuitem"><span class="memo-bopt-ico">&#9312;</span> 원숫자</button>
+          <button class="memo-bullet-opt" data-mark="num" role="menuitem"><span class="memo-bopt-ico">1.</span> 숫자</button>
+        </div>
+      </div>
+      <button class="memo-tbtn" id="memoCopy" title="메모 복사" aria-label="메모 복사">
+        <span class="memo-tbtn-ico">⧉</span><span class="memo-tbtn-lbl">복사</span>
+      </button>
+      <span class="memo-status" id="memoStatus"></span>
+    </div>
+    <textarea class="memo-body" id="memoBody" placeholder="여기에 메모를 작성하세요. 글머리 기호는 줄을 선택해서 일괄 적용할 수 있어요." spellcheck="false"></textarea>
+  </div>
+</div><!-- /viewMemo -->
+
+<!-- Memo list modal -->
+<div class="overlay" id="memoListOv">
+  <div class="modal memo-list-modal">
+    <button class="m-close" id="memoListCloseX" type="button" aria-label="닫기" title="닫기">&times;</button>
+    <h2>저장된 메모</h2>
+    <div class="memo-list-search-wrap">
+      <input class="memo-list-search" id="memoListSearch" type="text" placeholder="제목·내용 검색" autocomplete="off">
+    </div>
+    <div class="memo-list" id="memoList"></div>
+    <div class="m-btns">
+      <button class="m-btn cancel" id="memoListClose" style="flex:1;">닫기</button>
+    </div>
+  </div>
+</div>
+
+<div class="themes" id="themes">
+  <div class="td g on" data-th="green"></div>
+  <div class="td b" data-th="blue"></div>
+  <div class="td c" data-th="coral"></div>
+  <div class="th-more-wrap">
+    <button class="th-more" id="thMore">+</button>
+    <div class="th-pop" id="thPop">
+      <div class="td lv" data-th="lavender"></div>
+      <div class="td pk" data-th="pink"></div>
+      <div class="td nv" data-th="navy"></div>
+    </div>
+  </div>
+  <button class="help-btn" id="btnHelp" title="사용법" aria-label="사용법 보기">?</button>
+</div>
+</div>
+
+<!-- Settings Modal -->
+<div class="overlay" id="overlay">
+  <div class="modal">
+    <button class="m-close" id="mClose" type="button" aria-label="닫기" title="닫기">&times;</button>
+    <h2>설정</h2>
+    <div class="m-warn" id="mWarn" style="display:none;">&#9888; 타이머가 실행 중이에요. 변경 사항은 <b>다음 타이머부터</b> 적용돼요.</div>
+    <div class="m-sec"><div class="m-lbl">휴식 시간</div><div class="m-row"><input class="m-inp" id="sRest" type="number" min="1" max="60" value="5" autocomplete="off" inputmode="numeric"><span class="m-unit">분</span></div></div>
+    <div class="m-sec"><div class="m-lbl">뽀모도로 — 집중 시간</div><div class="m-row"><input class="m-inp" id="sFocus" type="number" min="1" max="120" value="25" autocomplete="off" inputmode="numeric"><span class="m-unit">분</span></div></div>
+    <div class="m-sec"><div class="m-lbl">뽀모도로 — 휴식 시간</div><div class="m-row"><input class="m-inp" id="sPRest" type="number" min="1" max="60" value="5" autocomplete="off" inputmode="numeric"><span class="m-unit">분</span></div></div>
+    <div class="m-sec"><div class="m-lbl">뽀모도로 — 반복 횟수</div><div class="m-row"><input class="m-inp" id="sCount" type="number" min="1" max="20" value="4" autocomplete="off" inputmode="numeric"><span class="m-unit">회</span></div></div>
+    <div class="m-sec"><div class="m-lbl">뽀모도로 — 긴 휴식 (반복 완료 후)</div><div class="m-row"><input class="m-inp" id="sLongRest" type="number" min="1" max="60" value="15" autocomplete="off" inputmode="numeric"><span class="m-unit">분</span></div></div>
+    <div class="m-btns">
+      <button class="m-btn def" id="mDef">기본값</button>
+      <button class="m-btn cancel" id="mCancel">취소</button>
+      <button class="m-btn ok" id="mOk">확인</button>
+    </div>
+    <div class="pomo-sec"><button class="pomo-btn" id="pomoBtn">뽀모도로 시작</button></div>
+    <div class="data-sec">
+      <div class="m-data-note">알림음, 데이터 관리, 통계 기간 등 추가 설정은 <b>통계 탭 → 고급 설정</b>에서 찾을 수 있어요.</div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast (timer done / rest start alert — center modal) -->
+<div class="toast" id="toast">
+  <div class="toast-box">
+    <h3 id="toastH">타이머 종료</h3>
+    <p id="toastP">수고했어요!</p>
+    <div class="toast-btns">
+      <button id="toastRestart" class="toast-restart" style="display:none;">다시 시작</button>
+      <button id="toastRest" class="toast-restart" style="display:none;">휴식</button>
+      <button id="toastOk">확인</button>
+    </div>
+  </div>
+</div>
+
+<!-- Custom confirm popup (replaces browser confirm()) -->
+<div class="toast" id="confirmPopup">
+  <div class="toast-box">
+    <h3 id="confirmH">확인</h3>
+    <p id="confirmP"></p>
+    <div class="toast-btns">
+      <button id="confirmCancel" class="toast-restart">취소</button>
+      <button id="confirmOk">확인</button>
+    </div>
+  </div>
+</div>
+
+<!-- Stats Modal -->
+<!-- Help Modal -->
+<div class="overlay" id="helpOverlay">
+  <div class="modal help-modal">
+    <button class="m-close" id="helpCloseX" type="button" aria-label="닫기" title="닫기">&times;</button>
+    <h2>사용법</h2>
+    <div class="help-sec">
+      <div class="help-h">타이머</div>
+      <ul class="help-list">
+        <li><b>프리셋 버튼</b>으로 5~60분 중 선택, 또는 <b>직접입력</b>으로 시/분/초 지정</li>
+        <li><b>−5 / +5</b> 버튼으로 진행 중에도 5분씩 늘리고 줄일 수 있어요</li>
+        <li><b>시계 모양 휴식 버튼</b>은 간단한 휴식 타이머를 바로 시작해요</li>
+      </ul>
+    </div>
+    <div class="help-sec">
+      <div class="help-h">뽀모도로</div>
+      <ul class="help-list">
+        <li>설정 &rarr; <b>뽀모도로 시작</b> 버튼으로 집중·휴식 사이클 시작</li>
+        <li>할 일의 <b>▼ 드롭다운 → 뽀모도로 시작</b>으로 특정 할 일에 집중 시간 할당</li>
+        <li>4회 완료 후에는 긴 휴식이 자동으로 들어가요</li>
+      </ul>
+    </div>
+    <div class="help-sec">
+      <div class="help-h">할 일 태그</div>
+      <ul class="help-list">
+        <li><b>연필 아이콘(✎)</b>을 누르면 편집창이 열려요. <b>마감</b>과 <b>반복</b> 줄에서 원하는 칩을 눌러 지정</li>
+        <li>마감일 "날짜…" 칩을 누르면 달력이 열려 직접 선택 가능</li>
+        <li>빠른 입력: 추가할 때 <code>회의 !내일 @매주</code>처럼 <b>!마감 @반복</b> 태그를 섞어 써도 돼요</li>
+        <li>태그 예시: <b>!오늘 / !내일 / !모레 / !12/25 / !2026-04-20</b>, <b>@매일 / @매주 / @매월</b></li>
+      </ul>
+    </div>
+    <div class="help-sec">
+      <div class="help-h">할 일 관리</div>
+      <ul class="help-list">
+        <li><b>연필 아이콘(✎)</b>으로 내용 수정 + 마감/반복 시각적 지정</li>
+        <li>번호(원)를 <b>드래그</b>해서 순서 변경</li>
+        <li>+ 버튼으로 하위 할 일 추가</li>
+        <li>완료한 할 일은 7일 후 자동 삭제 (설정에서 내보내기 가능)</li>
+        <li>우측 상단 <b>눈 아이콘</b>으로 할 일을 가릴 수 있어요</li>
+      </ul>
+    </div>
+    <div class="help-sec">
+      <div class="help-h">메모</div>
+      <ul class="help-list">
+        <li>상단 <b>메모</b> 탭에서 제목과 내용을 작성하고 <b>저장</b> 버튼으로 저장</li>
+        <li><b>목록</b> 버튼으로 저장된 메모를 최근 수정순으로 확인 (검색 가능)</li>
+        <li><b>글씨 크기</b> 버튼으로 작게/보통/크게 전환</li>
+        <li><b>글머리</b> 버튼 → 불렛(•), 원숫자(①), 숫자(1.) 중 선택해 줄 앞에 일괄 적용</li>
+        <li>여러 줄을 선택한 뒤 적용하면 각 줄에 순번이 붙어요</li>
+        <li><b>복사</b> 버튼으로 본문 전체를 클립보드에 복사</li>
+        <li>작성 중인 내용은 자동으로 임시 저장돼요</li>
+      </ul>
+    </div>
+    <div class="help-sec">
+      <div class="help-h">키보드 단축키</div>
+      <ul class="help-list">
+        <li><code>Space</code> — 타이머 시작/일시정지 (입력창 포커스 아닐 때)</li>
+        <li><code>/</code> — 할 일 입력창으로 포커스 이동</li>
+        <li><code>Esc</code> — 설정·도움말 창 닫기, 할 일 편집 취소</li>
+        <li><code>Enter</code> — 할 일 추가, 편집 저장</li>
+      </ul>
+    </div>
+    <div class="help-sec">
+      <div class="help-h">기타</div>
+      <ul class="help-list">
+        <li>상단 메시지는 <b>클릭해서 수정</b> 가능</li>
+        <li>테마 동그라미로 색상 변경, <b>+</b>로 추가 테마 보기</li>
+        <li>통계 탭의 <b>고급 설정</b>에서 무음 모드, 통계 기간, 주 시작 요일 변경</li>
+        <li>데이터는 모두 이 브라우저에만 저장돼요 (외부 전송 없음)</li>
+      </ul>
+    </div>
+    <div class="m-btns">
+      <button class="m-btn cancel" id="helpClose" style="flex:1;">닫기</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+'use strict';
+
+/* ── Helpers ── */
+const $=s=>document.getElementById(s);
+const $$=s=>document.querySelectorAll(s);
+const pad=n=>String(n).padStart(2,'0');
+const clamp=(v,lo,hi)=>Math.max(lo,Math.min(hi,v));
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/`/g,'&#96;');}
+
+/* Safe integer parse with range check — used for all user-controllable indices */
+function toIdx(v, max){
+  const n = parseInt(v, 10);
+  return (Number.isInteger(n) && n >= 0 && n < max) ? n : -1;
+}
+
+/* localStorage wrapper — logs failures instead of silent swallow */
+function ls(k, v){
+  try{
+    if(v === undefined){
+      const raw = localStorage.getItem(k);
+      return raw === null ? null : JSON.parse(raw);
+    }
+    localStorage.setItem(k, JSON.stringify(v));
+    return true;
+  }catch(e){
+    if(v === undefined) return null;
+    console.warn('[pomodoro] localStorage save failed:', k, e.message);
+    return false;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Single registry of every localStorage key the app uses.
+   Adding a new persistent setting? Add the key here first, never use
+   bare strings elsewhere. Makes data-reset and migration trivial.
+   ═══════════════════════════════════════════════════════════════════ */
+const LS_KEYS = Object.freeze({
+  TODOS:  'pomo_todos3',
+  STATS:  'pomo_stats',
+  CFG:    'pomo_cfg',
+  THEME:  'pomo_theme',
+  MUTE:   'pomo_mute',
+  HIDDEN: 'pomo_hidden',
+  STAT_RANGE:  'pomo_stat_range',  /* number of days shown in stats: 7|14|30 */
+  WEEK_START:  'pomo_week_start',  /* 0 = Sunday, 1 = Monday */
+  LAYOUT: 'pomo_layout',           /* which cards to show: {timer, todo, clock} booleans */
+  DARK:   'pomo_dark',             /* dark mode on/off */
+  PRIORITIES: 'pomo_priorities',   /* [{key, label, color}, ...] user-defined priority levels */
+  MEMOS:       'pomo_memos',       /* [{id, title, content, createdAt, updatedAt}] */
+  MEMO_DRAFT:  'pomo_memo_draft',  /* {id, title, content} — current editing buffer */
+  MEMO_FONT:   'pomo_memo_font',   /* 'sm' | 'md' | 'lg' */
+});
+
+/* ═══════════════════════════════════════════════════════════════════
+   ── Priority system (user-customizable, 2–5 levels) ──
+   Each priority: { key: 'p1'|'p2'|..., label: string, color: '#hex' }
+   Internal keys (p1-p5) are stable — they persist even if the user
+   renames or reorders priorities. Only labels and colors change.
+   ═══════════════════════════════════════════════════════════════════ */
+const DEFAULT_PRIORITIES = [
+  { key: 'p1', label: '당장', color: '#e87c5c' },
+  { key: 'p2', label: '오늘', color: '#4a8f6b' },
+  { key: 'p3', label: '이번주', color: '#a0a0a0' },
+];
+const MAX_PRI = 5;
+/* Migration map: old hardcoded keys → new stable keys */
+const PRI_MIGRATE = { urgent: 'p1', today: 'p2', week: 'p3' };
+
+function sanitizePriorities(arr){
+  if(!Array.isArray(arr) || arr.length < 2) return null;
+  const seen = new Set();
+  const out = [];
+  for(const p of arr){
+    if(!p || typeof p !== 'object') continue;
+    const key = typeof p.key === 'string' ? p.key : '';
+    if(!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      key,
+      label: (typeof p.label === 'string' ? p.label.slice(0, 12) : key).trim() || key,
+      color: /^#[0-9a-fA-F]{3,8}$/.test(p.color) ? p.color : '#a0a0a0',
+    });
+    if(out.length >= MAX_PRI) break;
+  }
+  return out.length >= 2 ? out : null;
+}
+let priorities = sanitizePriorities(ls(LS_KEYS.PRIORITIES)) || DEFAULT_PRIORITIES.map(p => ({...p}));
+function savePriorities(){ ls(LS_KEYS.PRIORITIES, priorities); }
+
+/* Lookup helpers */
+function priLabel(key){ const p = priorities.find(x => x.key === key); return p ? p.label : key; }
+function priColor(key){ const p = priorities.find(x => x.key === key); return p ? p.color : '#a0a0a0'; }
+function priKeys(){ return priorities.map(p => p.key); }
+function priDefault(){ return priorities[0].key; }
+/* Next available key for adding new priorities */
+function nextPriKey(){
+  for(let i = 1; i <= MAX_PRI; i++){
+    if(!priorities.find(p => p.key === 'p'+i)) return 'p'+i;
+  }
+  return null;
+}
+
+const VALID_RECUR = ['daily','weekly','monthly'];
+
+/* Whitelist-based sanitization — this is the real defense against
+   localStorage tampering (whether accidental or malicious) */
+function sanitizeTodo(t){
+  if(!t || typeof t !== 'object' || Array.isArray(t)) return null;
+  const txt = typeof t.t === 'string' ? t.t.slice(0, 200) : '';
+  if(!txt) return null;
+  /* Migrate old hardcoded keys (urgent/today/week) → stable keys (p1/p2/p3) */
+  let rawPri = typeof t.pri === 'string' ? t.pri : '';
+  if(PRI_MIGRATE[rawPri]) rawPri = PRI_MIGRATE[rawPri];
+  const pri = priKeys().includes(rawPri) ? rawPri : priDefault();
+  const subs = Array.isArray(t.subs)
+    ? t.subs.filter(s => s && typeof s === 'object' && typeof s.t === 'string')
+        .map(s => ({ t: s.t.slice(0, 120), d: !!s.d }))
+        .slice(0, 20)
+    : [];
+  const d = !!t.d;
+  let doneAt = null;
+  if(d){
+    doneAt = (typeof t.doneAt === 'number' && t.doneAt > 0 && t.doneAt <= Date.now())
+      ? t.doneAt : Date.now();
+  }
+  /* Pomodoro count for this task — sessions spent focusing on it */
+  const pomoCount = (typeof t.pomoCount === 'number' && t.pomoCount >= 0 && t.pomoCount < 10000)
+    ? Math.floor(t.pomoCount) : 0;
+  /* Due date: YYYY-MM-DD string, validated */
+  let due = null;
+  if(typeof t.due === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(t.due)){
+    const testDate = new Date(t.due + 'T00:00:00');
+    if(!isNaN(testDate.getTime())) due = t.due;
+  }
+  /* Recurrence */
+  const recur = VALID_RECUR.includes(t.recur) ? t.recur : null;
+  /* Creation timestamp */
+  const createdAt = (typeof t.createdAt === 'number' && t.createdAt > 0 && t.createdAt <= Date.now())
+    ? t.createdAt : Date.now();
+  return { t: txt, d, subs, showSub: false, pri, doneAt, pomoCount, due, recur, createdAt };
+}
+function sanitizeCfg(c){
+  if(!c || typeof c !== 'object' || Array.isArray(c)) return {};
+  const o = {};
+  if(typeof c.restMin === 'number') o.restMin = clamp(Math.floor(c.restMin), 1, 60);
+  if(typeof c.focusMin === 'number') o.focusMin = clamp(Math.floor(c.focusMin), 1, 120);
+  if(typeof c.pomoRestMin === 'number') o.pomoRestMin = clamp(Math.floor(c.pomoRestMin), 1, 60);
+  if(typeof c.pomoCount === 'number') o.pomoCount = clamp(Math.floor(c.pomoCount), 1, 20);
+  if(typeof c.longRestMin === 'number') o.longRestMin = clamp(Math.floor(c.longRestMin), 1, 60);
+  return o;
+}
+
+/* ── Stats ──
+   Schema: { "YYYY-MM-DD": { completed: n, interrupted: n, perTodo: { todoIdx: n } } }
+   Kept for 90 days (trim on load). */
+function sanitizeStats(s){
+  if(!s || typeof s !== 'object' || Array.isArray(s)) return {};
+  const out = {};
+  const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 90);
+  const cutoffStr = toDateStr(cutoff);
+  Object.keys(s).forEach(k => {
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(k)) return;
+    if(k < cutoffStr) return;
+    const day = s[k];
+    if(!day || typeof day !== 'object' || Array.isArray(day)) return;
+    const completed = typeof day.completed === 'number' ? clamp(Math.floor(day.completed), 0, 10000) : 0;
+    const interrupted = typeof day.interrupted === 'number' ? clamp(Math.floor(day.interrupted), 0, 10000) : 0;
+    out[k] = { completed, interrupted };
+  });
+  return out;
+}
+let stats = sanitizeStats(ls(LS_KEYS.STATS));
+function saveStats(){ ls(LS_KEYS.STATS, stats); }
+/* Optional hook: UI can register a callback to be invoked after stats change. */
+let onStatsChanged = null;
+function recordPomoCompleted(){
+  const k = toDateStr(new Date());
+  if(!stats[k]) stats[k] = { completed: 0, interrupted: 0 };
+  stats[k].completed++;
+  saveStats();
+  if(onStatsChanged) onStatsChanged();
+}
+function recordPomoInterrupted(){
+  const k = toDateStr(new Date());
+  if(!stats[k]) stats[k] = { completed: 0, interrupted: 0 };
+  stats[k].interrupted++;
+  saveStats();
+  if(onStatsChanged) onStatsChanged();
+}
+
+/* ── Themes ── */
+const T={
+  green:{'--bg':'#ece7de','--shell':'#f3efe8','--card':'#f9f7f3','--card-bd':'#e2ddd4','--text':'#2d2d2d','--sub':'#8a8a8a','--muted':'#b5b5b5','--track':'#ddd8cf','--input':'#efebe4','--input-bd':'#d8d3ca','--hover':'#eee9e1','--pri':'#4a8f6b','--pri-glow':'rgba(74,143,107,.2)','--pri-lt':'rgba(74,143,107,.08)','--pri-vlt':'rgba(74,143,107,.04)','--rest':'#e8a44c','--rest-glow':'rgba(232,164,76,.2)','--pu':'#e87c5c','--pu-bg':'rgba(232,124,92,.1)','--pt':'#4a8f6b','--pt-bg':'rgba(74,143,107,.1)','--pw':'#a0a0a0','--pw-bg':'rgba(160,160,160,.1)'},
+  blue:{'--bg':'#e4e8ee','--shell':'#eaecf2','--card':'#f4f5f9','--card-bd':'#d6dae4','--text':'#2d2d2d','--sub':'#7a8090','--muted':'#a5aab5','--track':'#d4d8e2','--input':'#e8ebf2','--input-bd':'#cdd2dc','--hover':'#e4e8f0','--pri':'#4a5f8f','--pri-glow':'rgba(74,95,143,.2)','--pri-lt':'rgba(74,95,143,.08)','--pri-vlt':'rgba(74,95,143,.04)','--rest':'#d4a44c','--rest-glow':'rgba(212,164,76,.2)','--pu':'#d4785c','--pu-bg':'rgba(212,120,92,.1)','--pt':'#4a5f8f','--pt-bg':'rgba(74,95,143,.1)','--pw':'#98a0ad','--pw-bg':'rgba(152,160,173,.1)'},
+  coral:{'--bg':'#dde4ea','--shell':'#e8ecf0','--card':'#f2f5f8','--card-bd':'#d0d8e0','--text':'#2d2d2d','--sub':'#7a8590','--muted':'#a0aab5','--track':'#d0d8e0','--input':'#e5eaef','--input-bd':'#c8d0d8','--hover':'#e0e6ec','--pri':'#c45c4a','--pri-glow':'rgba(196,92,74,.2)','--pri-lt':'rgba(196,92,74,.08)','--pri-vlt':'rgba(196,92,74,.04)','--rest':'#d4a44c','--rest-glow':'rgba(212,164,76,.2)','--pu':'#c45c4a','--pu-bg':'rgba(196,92,74,.1)','--pt':'#5a8a7a','--pt-bg':'rgba(90,138,122,.1)','--pw':'#95a0a8','--pw-bg':'rgba(149,160,168,.1)'},
+  lavender:{'--bg':'#e6e6ec','--shell':'#ececf1','--card':'#f5f5f8','--card-bd':'#cfcfd8','--text':'#2d2836','--sub':'#6e6878','--muted':'#a5a0b0','--track':'#dcdae4','--input':'#ededf2','--input-bd':'#c5c3d0','--hover':'#e0dfe7','--pri':'#b8a5d9','--pri-glow':'rgba(184,165,217,.25)','--pri-lt':'rgba(184,165,217,.1)','--pri-vlt':'rgba(184,165,217,.05)','--rest':'#e8c474','--rest-glow':'rgba(232,196,116,.2)','--pu':'#d67878','--pu-bg':'rgba(214,120,120,.1)','--pt':'#b8a5d9','--pt-bg':'rgba(184,165,217,.12)','--pw':'#a5a0b0','--pw-bg':'rgba(165,160,176,.1)'},
+  pink:{'--bg':'#f2cfd2','--shell':'#f5d7d9','--card':'#fbecee','--card-bd':'#e5b8bc','--text':'#3a2a2e','--sub':'#8a6a70','--muted':'#b89aa0','--track':'#e8c0c4','--input':'#f5dde0','--input-bd':'#d8b0b4','--hover':'#eecace','--pri':'#e89aa8','--pri-glow':'rgba(232,154,168,.3)','--pri-lt':'rgba(232,154,168,.12)','--pri-vlt':'rgba(232,154,168,.05)','--rest':'#f4d35e','--rest-glow':'rgba(244,211,94,.25)','--pu':'#d85a6a','--pu-bg':'rgba(216,90,106,.1)','--pt':'#e89aa8','--pt-bg':'rgba(232,154,168,.12)','--pw':'#b89aa0','--pw-bg':'rgba(184,154,160,.1)'},
+  navy:{'--bg':'#f7f1dc','--shell':'#efe7cc','--card':'#fff9ea','--card-bd':'#e0d6b8','--text':'#1f2a3d','--sub':'#5a6478','--muted':'#8a90a4','--track':'#e0d6b8','--input':'#f4edda','--input-bd':'#d8cfb2','--hover':'#ece4c8','--pri':'#2c3e5a','--pri-glow':'rgba(44,62,90,.25)','--pri-lt':'rgba(44,62,90,.10)','--pri-vlt':'rgba(44,62,90,.04)','--rest':'#e8a860','--rest-glow':'rgba(232,168,96,.25)','--pu':'#c0392b','--pu-bg':'rgba(192,57,43,.1)','--pt':'#d4a22a','--pt-bg':'rgba(212,162,42,.1)','--pw':'#7a8498','--pw-bg':'rgba(122,132,152,.08)'}
+};
+/* ── Theme-specific dark palettes ──
+   Each theme gets its own dark surface colors so the mood is preserved.
+   Accent vars (--pri, --rest, etc.) come from T[theme]; TD only overrides surfaces. */
+const TD={
+  green:{'--bg':'#1a2420','--shell':'#1e2a25','--card':'#243029','--card-bd':'#2e3a34','--text':'#d8e4dc','--sub':'#8aa098','--muted':'#5a7068','--track':'#2e3a34','--input':'#1e2a25','--input-bd':'#3a4a42','--hover':'#283430','--pri-glow':'rgba(74,143,107,.35)','--pri-lt':'rgba(74,143,107,.15)','--pri-vlt':'rgba(74,143,107,.08)'},
+  blue:{'--bg':'#181e28','--shell':'#1c2230','--card':'#222838','--card-bd':'#2e3848','--text':'#d4dae8','--sub':'#8890a8','--muted':'#5a6478','--track':'#2e3848','--input':'#1c2230','--input-bd':'#3a4858','--hover':'#242c3a','--pri-glow':'rgba(74,95,143,.35)','--pri-lt':'rgba(74,95,143,.15)','--pri-vlt':'rgba(74,95,143,.08)'},
+  coral:{'--bg':'#241a18','--shell':'#2a1f1d','--card':'#322624','--card-bd':'#3e302e','--text':'#e4d8d4','--sub':'#a08882','--muted':'#6a5854','--track':'#3e302e','--input':'#2a1f1d','--input-bd':'#4a3a36','--hover':'#30282a','--pri-glow':'rgba(196,92,74,.35)','--pri-lt':'rgba(196,92,74,.15)','--pri-vlt':'rgba(196,92,74,.08)'},
+  lavender:{'--bg':'#1c1828','--shell':'#201e30','--card':'#262238','--card-bd':'#342e48','--text':'#dcd8e8','--sub':'#9088a8','--muted':'#5a5472','--track':'#342e48','--input':'#201e30','--input-bd':'#3e3852','--hover':'#282438','--pri-glow':'rgba(184,165,217,.35)','--pri-lt':'rgba(184,165,217,.15)','--pri-vlt':'rgba(184,165,217,.08)'},
+  pink:{'--bg':'#241a1e','--shell':'#2a1f24','--card':'#32262a','--card-bd':'#3e2e34','--text':'#e8d8dc','--sub':'#a88890','--muted':'#6a5860','--track':'#3e2e34','--input':'#2a1f24','--input-bd':'#4a3a3e','--hover':'#302628','--pri-glow':'rgba(232,154,168,.35)','--pri-lt':'rgba(232,154,168,.12)','--pri-vlt':'rgba(232,154,168,.06)'},
+  navy:{'--bg':'#1e1c14','--shell':'#24221a','--card':'#2a2820','--card-bd':'#3a3828','--text':'#e4e0d0','--sub':'#9a9484','--muted':'#6a6454','--track':'#3a3828','--input':'#24221a','--input-bd':'#4a4838','--hover':'#302e22','--pri-glow':'rgba(44,62,90,.4)','--pri-lt':'rgba(44,62,90,.2)','--pri-vlt':'rgba(44,62,90,.1)'}
+};
+let theme=(t=>{const v=ls(LS_KEYS.THEME);return typeof v==='string'&&T[v]?v:'green';})();
+/* Surface variable keys that dark mode overrides with theme-specific dark palettes. */
+const DARK_SURFACE = new Set(['--bg','--shell','--card','--card-bd','--text','--sub','--muted','--track','--input','--input-bd','--hover']);
+/* darkMode must be declared before setTheme() is first called,
+   because setTheme checks it to apply dark surfaces. */
+let darkMode = !!ls(LS_KEYS.DARK);
+function setTheme(n){
+  if(!T[n])return;
+  const r=document.documentElement;
+  /* Apply all theme vars (accent colors like --pri, --rest, etc.) */
+  Object.entries(T[n]).forEach(([k,v])=>{
+    if(darkMode && DARK_SURFACE.has(k)) return; /* skip — dark palette handles these */
+    r.style.setProperty(k,v);
+  });
+  /* In dark mode, overlay theme-specific dark surface colors */
+  if(darkMode && TD[n]){
+    Object.entries(TD[n]).forEach(([k,v])=> r.style.setProperty(k,v));
+  }
+  $$('.td').forEach(d=>d.classList.toggle('on',d.dataset.th===n));
+  theme=n; ls(LS_KEYS.THEME,n);
+}
+$$('.td').forEach(d=>d.addEventListener('click',()=>{setTheme(d.dataset.th);$('thPop').classList.remove('open');$('thMore').classList.remove('open');}));
+$('thMore').addEventListener('click',e=>{e.stopPropagation();$('thPop').classList.toggle('open');$('thMore').classList.toggle('open');});
+document.addEventListener('click',e=>{if(!e.target.closest('.th-more-wrap')){$('thPop').classList.remove('open');$('thMore').classList.remove('open');}});
+setTheme(theme);
+
+/* ── Timer ring — SVG stroke fills along the path as progress advances ── */
+const ring = $('ringFg');
+const ringLen = ring.getTotalLength();
+ring.style.strokeDasharray = ringLen;
+ring.style.strokeDashoffset = ringLen;
+function setRing(pct){
+  const p = Math.max(0, Math.min(1, pct));
+  ring.style.strokeDashoffset = ringLen * (1 - p);
+}
+
+/* ── Editable message (with paste sanitization) ── */
+const msgEl=$('msg');
+let userMsg='Great things take time.';
+msgEl.addEventListener('click',function(){
+  if(this.contentEditable==='true')return;
+  this.contentEditable='true'; this.classList.add('editing'); this.focus();
+  const r=document.createRange(); r.selectNodeContents(this);
+  const s=getSelection(); s.removeAllRanges(); s.addRange(r);
+});
+/* Prevent HTML injection via paste — only plain text allowed */
+msgEl.addEventListener('paste', e => {
+  e.preventDefault();
+  const text = (e.clipboardData || window.clipboardData).getData('text');
+  /* insertText preserves contenteditable behavior while stripping formatting */
+  document.execCommand('insertText', false, text.slice(0, 200));
+});
+/* Also block drag-drop HTML content */
+msgEl.addEventListener('drop', e => {
+  e.preventDefault();
+  const text = (e.dataTransfer && e.dataTransfer.getData('text')) || '';
+  document.execCommand('insertText', false, text.slice(0, 200));
+});
+function endEdit(){
+  msgEl.contentEditable='false';
+  msgEl.classList.remove('editing');
+  /* Defensive: read textContent only, never innerHTML */
+  userMsg = msgEl.textContent.trim().slice(0, 200) || '';
+  msgEl.textContent = userMsg || 'Great things take time.';
+  if(!userMsg) userMsg = '';
+}
+msgEl.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();endEdit();msgEl.blur();}});
+msgEl.addEventListener('blur',endEdit);
+
+/* ── Clock ── */
+const days=['일','월','화','수','목','금','토'];
+function tick(){
+  const d=new Date(), h=d.getHours();
+  $('ckDate').textContent=`${d.getFullYear()}년 ${d.getMonth()+1}월 ${d.getDate()}일 (${days[d.getDay()]})`;
+  $('ckAP').textContent=h<12?'오전':'오후';
+  $('ckTime').textContent=`${pad(h)}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+setInterval(tick,1000); tick();
+
+/* ── Settings ── */
+let cfg=Object.assign({restMin:5,focusMin:25,pomoRestMin:5,pomoCount:4,longRestMin:15},sanitizeCfg(ls(LS_KEYS.CFG)));
+function saveCfg(){ls(LS_KEYS.CFG,cfg);}
+
+/* ═══════════════════════════════════════════════════════════════════
+   ── Timer module ──
+   State variables:
+     total, remain   — seconds; total = configured duration, remain = countdown
+     active          — true while ticking
+     iv              — setInterval handle (cleared on stop)
+     endTimeMs       — wall-clock anchor for drift-free countdown
+     pendingStart    — setTimeout for auto-start at pomo phase boundaries
+     restWatcher     — setInterval that polls during the post-completion rest
+   Lifecycle: display() updates UI; start()/stop() are the public toggles;
+   tick() runs every 250ms while active. clearAllPendingTimers() cancels
+   any queued auto-start or rest watcher — call before mode switches.
+   ═══════════════════════════════════════════════════════════════════ */
+/* ── Timer state ── */
+let total=25*60, remain=25*60, iv=null, active=false;
+/* Pending auto-start from pomodoro phase transition — tracked so we can cancel */
+let pendingStart = null;
+/* Rest button completion watcher — tracked so we can cancel/dedupe */
+let restWatcher = null;
+/* Timer anchor for drift-free countdown */
+let endTimeMs = 0;
+
+function clearPendingStart(){
+  if(pendingStart){ clearTimeout(pendingStart); pendingStart = null; }
+}
+function clearRestWatcher(){
+  if(restWatcher){ clearInterval(restWatcher); restWatcher = null; }
+}
+/* Combined cleanup — used whenever switching modes/states such that all
+   pending side-effects from the previous state should be cancelled. */
+function clearAllPendingTimers(){
+  clearPendingStart();
+  clearRestWatcher();
+}
+
+function display(){
+  $('tH').textContent=pad(Math.floor(remain/3600));
+  $('tM').textContent=pad(Math.floor(remain%3600/60));
+  $('tS').textContent=pad(remain%60);
+  setRing(total>0?(total-remain)/total:0);
+  if(!userMsg){
+    const msg = remain > total*.99 ? '집중할 시간!'
+              : remain > total*.75 ? '화이팅!'
+              : remain > total*.5  ? '좋은 페이스!'
+              : remain > total*.25 ? '반 이상 했어!'
+              : '거의 다 왔어!';
+    msgEl.textContent = msg;
+  }
+}
+
+function playIcon(playing){
+  $('playIco').setAttribute('d',playing?'M6 19h4V5H6v14zm8-14v14h4V5h-4z':'M8 5v14l11-7z');
+  $('btnPlay').classList.toggle('on',playing);
+}
+
+/* ── Sound (singleton AudioContext) ── */
+let audioCtx = null;
+/* Mute toggle — persisted in localStorage. Future-proofed for custom sound settings. */
+let mute = (function(){
+  try { return ls(LS_KEYS.MUTE) === true; } catch(e){ return false; }
+})();
+function setMute(v){
+  mute = !!v;
+  try { ls(LS_KEYS.MUTE, mute); } catch(e){}
+  const mb = $('btnMute');
+  if(mb) mb.setAttribute('aria-pressed', mute ? 'true' : 'false');
+  const ms = $('muteState');
+  if(ms) ms.textContent = mute ? '켜짐' : '꺼짐';
+}
+function beep(){
+  if(mute) return;  /* Silent mode — skip all audio */
+  try{
+    if(!audioCtx){
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if(!AC) return;
+      audioCtx = new AC();
+    }
+    if(audioCtx.state === 'suspended') audioCtx.resume().catch(()=>{});
+    const now = audioCtx.currentTime;
+    [0,.2,.4,.6].forEach(d=>{
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.connect(g); g.connect(audioCtx.destination);
+      o.frequency.value = d < .3 ? 880 : 660;
+      g.gain.setValueAtTime(.2, now + d);
+      g.gain.exponentialRampToValueAtTime(.001, now + d + .15);
+      o.start(now + d);
+      o.stop(now + d + .15);
+    });
+  }catch(e){ /* audio is best-effort */ }
+}
+
+/* Toast — alert popup for timer done, confirmations, etc.
+   opts.onRestart: shows "다시 시작" button
+   opts.onRest: shows "휴식" button (starts rest timer) */
+function toast(title, sub, opts){
+  opts = opts || {};
+  $('toastH').textContent = title;
+  $('toastP').textContent = sub;
+  const rb = $('toastRestart');
+  const restBtn = $('toastRest');
+  /* Restart button */
+  if(opts.onRestart){
+    rb.style.display = '';
+    rb.onclick = () => {
+      $('toast').classList.remove('on','glow');
+      try { opts.onRestart(); } catch(e) { console.warn('[pomodoro] restart failed:', e); }
+    };
+  } else { rb.style.display = 'none'; rb.onclick = null; }
+  /* Rest button */
+  if(opts.onRest){
+    restBtn.style.display = '';
+    restBtn.onclick = () => {
+      $('toast').classList.remove('on','glow');
+      try { opts.onRest(); } catch(e) { console.warn('[pomodoro] rest failed:', e); }
+    };
+  } else { restBtn.style.display = 'none'; restBtn.onclick = null; }
+  $('toast').classList.add('on','glow');
+  beep();
+}
+$('toastOk').addEventListener('click',()=>$('toast').classList.remove('on','glow'));
+
+/* Custom confirm popup — replaces browser confirm() for UI consistency.
+   Returns a Promise<boolean>. Usage: if(await customConfirm('title','msg')) { ... } */
+function customConfirm(title, msg){
+  return new Promise(resolve => {
+    $('confirmH').textContent = title;
+    $('confirmP').textContent = msg;
+    $('confirmPopup').classList.add('on');
+    $('confirmOk').onclick = () => { $('confirmPopup').classList.remove('on'); resolve(true); };
+    $('confirmCancel').onclick = () => { $('confirmPopup').classList.remove('on'); resolve(false); };
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   ── Pomodoro state machine ──
+   pomo.on        — true while a pomodoro session is active
+   pomo.phase     — 'focus' | 'rest' (current segment of the cycle)
+   pomo.cycle     — completed focus blocks in this session (0…pomo.total)
+   pomo.total     — focus blocks per session (default 4, from cfg.pomoCount)
+   pomo.isLongRest — true if the just-finished focus block earned the long rest
+   Transitions: focus → rest (short or long) → next focus auto-starts after 1.2s.
+   updatePomo() is the side-effecting renderer; it reads pomo + active and
+   updates the badge/buttons/ring class.
+   ═══════════════════════════════════════════════════════════════════ */
+/* ── Pomodoro mode ── */
+let pomo={on:false, phase:'focus', cycle:0, total:4};
+const badge=$('pomoBadge');
+
+/* ── Active task — which todo is being worked on during a pomodoro session ── */
+let activeTaskId = null; /* Uses createdAt (unique ms timestamp) to survive reorder/delete */
+function getActiveTaskIdx(){
+  if(activeTaskId === null) return -1;
+  return todos.findIndex(t => t.createdAt === activeTaskId);
+}
+function setActiveTask(createdAt){
+  activeTaskId = createdAt;
+  updateActiveTaskUI();
+  render();
+}
+function clearActiveTask(){
+  activeTaskId = null;
+  updateActiveTaskUI();
+  render();
+}
+function updateActiveTaskUI(){
+  const row = $('activeTaskRow'), lbl = $('activeTaskLabel');
+  const idx = getActiveTaskIdx();
+  if(idx < 0){
+    row.classList.remove('on');
+    activeTaskId = null;
+  } else {
+    lbl.textContent = todos[idx].t;
+    row.classList.add('on');
+  }
+}
+
+/* Start a pomodoro with a specific task attached as "active" */
+function startPomodoroForTask(todoIdx){
+  const t = todos[todoIdx];
+  if(!t) return;
+  /* Save latest settings, clear transients, enter pomodoro */
+  clearAllPendingTimers();
+  /* Stop existing timer cleanly (no interruption record if not currently in pomo focus) */
+  if(active && pomo.on && pomo.phase === 'focus' && remain > 0 && remain < total){
+    recordPomoInterrupted();
+  }
+  if(active) stop();
+  setActiveTask(t.createdAt);
+  pomo = { on:true, phase:'focus', cycle:0, total:cfg.pomoCount, isLongRest:false };
+  total = cfg.focusMin*60; remain = total;
+  ring.classList.remove('rest');
+  display(); updatePomo(); start();
+}
+
+function updatePomo(){
+  if(!pomo.on){
+    badge.classList.remove('on','rest');
+    ring.classList.remove('rest');
+    $('pomoBtn').textContent='뽀모도로 시작';
+    $('pomoBtn').classList.remove('stop');
+    /* Clear active task when leaving pomodoro mode */
+    if(activeTaskId !== null){ activeTaskId = null; updateActiveTaskUI(); render(); }
+    if(typeof updateAdjustButtons === 'function') updateAdjustButtons();
+    return;
+  }
+  badge.classList.add('on');
+  const isFocus = pomo.phase === 'focus';
+  badge.classList.toggle('rest', !isFocus);
+  ring.classList.toggle('rest', !isFocus);
+  const phaseLabel = isFocus ? '집중' : (pomo.isLongRest ? '긴 휴식' : '휴식');
+  $('pomoText').textContent = `${phaseLabel} 중 (${pomo.cycle+1}/${pomo.total})`;
+  $('pomoBtn').textContent = '뽀모도로 중지';
+  $('pomoBtn').classList.add('stop');
+  if(typeof updateAdjustButtons === 'function') updateAdjustButtons();
+}
+
+function onEnd(){
+  if(!pomo.on){
+    /* Distinguish manual rest timer (ring still has 'rest' class) from a regular timer.
+       The restWatcher will remove the class within 500ms; until then we can detect it. */
+    const wasRestTimer = ring.classList.contains('rest');
+    /* Build a restart closure that reproduces the just-finished timer.
+       Capturing total/wasRestTimer here is safe — they won't change. */
+    const restart = (() => {
+      const capturedTotal = total;
+      const capturedWasRest = wasRestTimer;
+      return () => {
+        clearAllPendingTimers();
+        stop();
+        total = capturedTotal;
+        remain = total;
+        ring.classList.toggle('rest', capturedWasRest);
+        display();
+        start();
+        /* If restarting a rest timer, re-arm the watcher so the class is cleared on completion */
+        if(capturedWasRest){
+          restWatcher = setInterval(() => {
+            if(!active && remain <= 0){
+              ring.classList.remove('rest');
+              clearRestWatcher();
+            }
+          }, 500);
+        }
+      };
+    })();
+    if(wasRestTimer){
+      toast('휴식 끝!', '다시 집중할 준비가 됐어요.', { onRestart: restart });
+    } else {
+      /* Build rest closure — starts a rest timer with the configured rest duration */
+      const startRest = () => {
+        clearAllPendingTimers();
+        stop();
+        total = cfg.restMin * 60; remain = total;
+        $$('.pre').forEach(p => p.classList.remove('on'));
+        ring.classList.add('rest');
+        display(); start();
+        restWatcher = setInterval(() => {
+          if(!active && remain <= 0){ ring.classList.remove('rest'); clearRestWatcher(); }
+        }, 500);
+      };
+      toast('타이머 종료', '수고했어요! 잠시 쉬어가세요.', { onRestart: restart, onRest: startRest });
+    }
+    return;
+  }
+  if(pomo.phase === 'focus'){
+    /* Record completed pomodoro session */
+    recordPomoCompleted();
+    const activeIdx = getActiveTaskIdx();
+    if(activeIdx >= 0){
+      todos[activeIdx].pomoCount = (todos[activeIdx].pomoCount || 0) + 1;
+      save();
+    }
+
+    /* Decide: long rest (after final focus of the cycle) or regular rest */
+    const willBeLongRest = (pomo.cycle + 1) >= pomo.total;
+    /* Note: cycle increments only AFTER rest finishes, so here cycle is still 0-based
+       for the focus just completed. When cycle+1 === total we've finished the last focus
+       and the next rest is effectively the long rest. */
+    const restMin = willBeLongRest ? cfg.longRestMin : cfg.pomoRestMin;
+    pomo.phase = 'rest';
+    pomo.isLongRest = willBeLongRest;
+    total = restMin * 60; remain = total;
+    display(); updatePomo();
+    toast(willBeLongRest ? '긴 휴식!' : '휴식 시작',
+          `${restMin}분 동안 쉬어가세요.`);
+    clearPendingStart();
+    pendingStart = setTimeout(()=>{ pendingStart = null; start(); }, 1200);
+  }else{
+    pomo.cycle++;
+    if(pomo.cycle >= pomo.total){
+      pomo.on = false; updatePomo();
+      toast('뽀모도로 완료!', `${pomo.total}세트를 모두 완료했어요!`);
+      total = cfg.focusMin*60; remain = total; display();
+      /* activeTask is cleared by updatePomo() since pomo.on=false */
+    }else{
+      pomo.phase = 'focus';
+      pomo.isLongRest = false;
+      total = cfg.focusMin*60; remain = total;
+      display(); updatePomo();
+      toast('휴식 끝!', `다시 집중할 시간이에요. (${pomo.cycle+1}/${pomo.total})`);
+      clearPendingStart();
+      pendingStart = setTimeout(()=>{ pendingStart = null; start(); }, 1200);
+    }
+  }
+}
+
+/* Drift-free countdown using wall-clock anchor. Fixes inaccuracy when
+   the tab is backgrounded or the CPU is throttled. */
+function start(){
+  if(active) return;
+  if(remain <= 0) remain = total;
+  if(remain <= 0) return;
+  active = true; playIcon(true);
+  endTimeMs = Date.now() + remain * 1000;
+  iv = setInterval(()=>{
+    const left = Math.max(0, Math.round((endTimeMs - Date.now()) / 1000));
+    if(left !== remain){ remain = left; display(); updateAdjustButtons(); }
+    if(remain <= 0){ stop(); onEnd(); }
+  }, 250);
+  updateAdjustButtons();
+}
+function stop(){
+  if(iv){ clearInterval(iv); iv = null; }
+  active = false; playIcon(false);
+  updateAdjustButtons();
+}
+
+$('btnPlay').addEventListener('click',()=>{
+  /* If a pending auto-start is queued, cancel it and toggle manually */
+  clearPendingStart();
+  if(active){
+    /* Record interruption if stopping during a pomodoro focus phase */
+    if(pomo.on && pomo.phase === 'focus' && remain > 0 && remain < total){
+      recordPomoInterrupted();
+    }
+    stop();
+  } else {
+    start();
+  }
+});
+$('btnReset').addEventListener('click',()=>{
+  clearAllPendingTimers();
+  /* Record interruption if resetting during active pomodoro focus */
+  if(active && pomo.on && pomo.phase === 'focus' && remain > 0 && remain < total){
+    recordPomoInterrupted();
+  }
+  stop();
+  const wasPomo = pomo.on;
+  if(wasPomo){ pomo.on = false; updatePomo(); }
+  ring.classList.remove('rest');
+  /* When resetting out of an active pomodoro (especially a rest phase),
+     restore the focus-time default so user sees the expected duration */
+  if(wasPomo) total = cfg.focusMin * 60;
+  remain = total;
+  display();
+});
+
+/* Rest button */
+$('btnRest').addEventListener('click',()=>{
+  if(pomo.on) return;
+  clearAllPendingTimers();
+  stop();
+  total = cfg.restMin*60; remain = total;
+  $$('.pre').forEach(p => p.classList.remove('on'));
+  ring.classList.add('rest');
+  display(); start();
+  restWatcher = setInterval(()=>{
+    if(!active && remain <= 0){
+      ring.classList.remove('rest');
+      clearRestWatcher();
+    }
+  }, 500);
+});
+
+/* Presets */
+$('presets').addEventListener('click',e=>{
+  const b = e.target.closest('.pre');
+  if(!b || active) return;
+  clearAllPendingTimers();
+  if(pomo.on){ pomo.on = false; updatePomo(); }
+  $$('.pre').forEach(p => p.classList.remove('on'));
+  b.classList.add('on');
+  const mins = toIdx(b.dataset.m, 1000);
+  if(mins < 1) return;
+  total = mins * 60; remain = total;
+  ring.classList.remove('rest');
+  display();
+});
+
+/* Custom time — with negative and overflow protection */
+function applyCustom(){
+  if(active) return;
+  clearAllPendingTimers();
+  if(pomo.on){ pomo.on = false; updatePomo(); }
+  const hRaw = parseInt($('cH').value, 10);
+  const mRaw = parseInt($('cM').value, 10);
+  const sRaw = parseInt($('cS').value, 10);
+  const h = Number.isInteger(hRaw) ? clamp(hRaw, 0, 23) : 0;
+  const m = Number.isInteger(mRaw) ? clamp(mRaw, 0, 59) : 0;
+  const s = Number.isInteger(sRaw) ? clamp(sRaw, 0, 59) : 0;
+  $('cH').value = h || '';
+  $('cM').value = m || '';
+  $('cS').value = s || '';
+  if(!h && !m && !s) return;
+  total = h*3600 + m*60 + s;
+  remain = total;
+  $$('.pre').forEach(p => p.classList.remove('on'));
+  ring.classList.remove('rest');
+  display();
+}
+$('applyCustom').addEventListener('click',applyCustom);
+$('cH').addEventListener('keydown',e=>{if(e.key==='Enter')applyCustom();});
+$('cM').addEventListener('keydown',e=>{if(e.key==='Enter')applyCustom();});
+$('cS').addEventListener('keydown',e=>{if(e.key==='Enter')applyCustom();});
+
+/* ── Time adjust (+5 / −5 minutes) ──
+   - Blocked during pomodoro (pomodoro owns its own schedule)
+   - Minimum total: 1 minute; maximum: 24 hours
+   - Active: shifts both total and remain, re-anchors endTimeMs
+   - Idle:   fully resets to new total (so pressing play uses the new duration)
+   - Preserves rest mode — adjusting during a rest timer extends/shortens
+     the rest, it doesn't cancel it */
+const MAX_TOTAL_SEC = 24 * 3600;
+function adjustTime(deltaSec){
+  if(pomo.on) return;
+  const newTotal = total + deltaSec;
+  if(newTotal < 60) return;
+  if(newTotal > MAX_TOTAL_SEC) return;
+  let newRemain;
+  if(active){
+    newRemain = remain + deltaSec;
+    if(newRemain < 1) return;
+  } else {
+    newRemain = newTotal;
+  }
+  clearPendingStart();
+  /* NOTE: intentionally do NOT clearRestWatcher() or remove the 'rest' class —
+     if user adjusted during a rest timer, the rest mode should persist */
+  total = newTotal;
+  remain = newRemain;
+  if(active) endTimeMs = Date.now() + remain * 1000;
+  $$('.pre').forEach(p => p.classList.remove('on'));
+  display();
+  updateAdjustButtons();
+}
+function updateAdjustButtons(){
+  /* Visual-only disabled state when the action would be refused */
+  const m5 = $('btnMinus5'), p5 = $('btnPlus5');
+  const minusBlocked = pomo.on || (total - 300) < 60 || (active && (remain - 300) < 1);
+  const plusBlocked  = pomo.on || (total + 300) > MAX_TOTAL_SEC;
+  m5.classList.toggle('disabled', minusBlocked);
+  p5.classList.toggle('disabled', plusBlocked);
+}
+$('btnMinus5').addEventListener('click', ()=>adjustTime(-5*60));
+$('btnPlus5').addEventListener('click', ()=>adjustTime(+5*60));
+
+display();
+updateAdjustButtons();
+
+/* ── Settings modal ── */
+const ov=$('overlay');
+function readModal(){
+  return {
+    restMin:    clamp(parseInt($('sRest').value, 10)  || 5,  1, 60),
+    focusMin:   clamp(parseInt($('sFocus').value, 10) || 25, 1, 120),
+    pomoRestMin:clamp(parseInt($('sPRest').value, 10) || 5,  1, 60),
+    pomoCount:  clamp(parseInt($('sCount').value, 10) || 4,  1, 20),
+    longRestMin:clamp(parseInt($('sLongRest').value, 10) || 15, 1, 60)
+  };
+}
+$('btnSet').addEventListener('click',()=>{
+  $('sRest').value=cfg.restMin; $('sFocus').value=cfg.focusMin;
+  $('sPRest').value=cfg.pomoRestMin; $('sCount').value=cfg.pomoCount;
+  $('sLongRest').value=cfg.longRestMin;
+  /* Show a warning banner if the user opens settings mid-run — we don't mutate
+     a running timer; changes take effect on the next start. */
+  $('mWarn').style.display = (active || pomo.on) ? 'block' : 'none';
+  updatePomo(); ov.classList.add('on');
+});
+$('mCancel').addEventListener('click',()=>ov.classList.remove('on'));
+$('mClose').addEventListener('click',()=>ov.classList.remove('on'));
+ov.addEventListener('click',e=>{if(e.target===ov)ov.classList.remove('on');});
+$('mOk').addEventListener('click',()=>{
+  const oldFocus = cfg.focusMin;
+  Object.assign(cfg, readModal());
+  saveCfg();
+  ov.classList.remove('on');
+  if(!active && !pomo.on && total === oldFocus*60){
+    total = cfg.focusMin*60; remain = total; display();
+  }
+});
+$('mDef').addEventListener('click',()=>{
+  $('sRest').value=5; $('sFocus').value=25; $('sPRest').value=5;
+  $('sCount').value=4; $('sLongRest').value=15;
+});
+
+$('pomoBtn').addEventListener('click',()=>{
+  Object.assign(cfg, readModal()); saveCfg();
+  ov.classList.remove('on');
+  clearAllPendingTimers();
+  if(pomo.on){
+    /* Record interruption if stopping mid-focus */
+    if(active && pomo.phase === 'focus' && remain > 0 && remain < total){
+      recordPomoInterrupted();
+    }
+    pomo.on = false; stop();
+    total = cfg.focusMin*60; remain = total;
+    display(); updatePomo();
+    return;
+  }
+  pomo = { on:true, phase:'focus', cycle:0, total:cfg.pomoCount, isLongRest:false };
+  total = cfg.focusMin*60; remain = total;
+  ring.classList.remove('rest');
+  display(); updatePomo(); start();
+});
+
+/* ═══════════════════════════════════════════════════════════════════
+   ── Todo module ──
+   Data:
+     todos          — array of sanitized todo objects
+     curPri         — current priority for new todos (user's picker selection)
+     curFilter      — current filter tab (all|undone|p1|p2|...)
+   Persistence: save() writes todos; loaded + sanitized at script start.
+   Flow: user action → mutate todos[] → save() → render().
+   Each todo has: t, d, subs, showSub, pri, doneAt, pomoCount, due, recur, createdAt.
+   ═══════════════════════════════════════════════════════════════════ */
+/* ── Todos ── */
+let todos=(Array.isArray(ls(LS_KEYS.TODOS))?ls(LS_KEYS.TODOS):[]).map(sanitizeTodo).filter(Boolean).slice(0,200);
+let curPri=priDefault(), curFilter='all', curSearch='';
+function save(){ls(LS_KEYS.TODOS,todos);}
+
+/* ── Date / recurrence helpers ── */
+function toDateStr(d){
+  /* YYYY-MM-DD in local time */
+  const y = d.getFullYear(), m = pad(d.getMonth()+1), day = pad(d.getDate());
+  return `${y}-${m}-${day}`;
+}
+function todayStr(){ return toDateStr(new Date()); }
+
+/* Parse inline tags from user input.
+   Returns { text, due, recur } — due is YYYY-MM-DD or null, recur is one of VALID_RECUR or null.
+   Tags are stripped from text. If only tags were provided (empty after strip),
+   we return empty text rather than falling back to raw (which would preserve the tag). */
+function parseTodoTags(raw){
+  let text = String(raw || ''), due = null, recur = null;
+
+  /* Recurrence tags: @매일 | @매주 | @매월 — anchored at word boundary (start or after whitespace) */
+  const recurMatch = text.match(/(^|\s)@(매일|매주|매월)(?=\s|$)/);
+  if(recurMatch){
+    recur = recurMatch[2] === '매일' ? 'daily' : recurMatch[2] === '매주' ? 'weekly' : 'monthly';
+    text = text.replace(recurMatch[0], recurMatch[1] ? ' ' : '').trim();
+  }
+
+  /* Due date tags: !오늘 | !내일 | !모레 | !MM/DD | !YYYY-MM-DD */
+  const dueMatch = text.match(/(^|\s)!(\S+)/);
+  if(dueMatch){
+    const tag = dueMatch[2];
+    const now = new Date();
+    if(tag === '오늘'){
+      due = todayStr();
+    } else if(tag === '내일'){
+      const t = new Date(now); t.setDate(t.getDate() + 1); due = toDateStr(t);
+    } else if(tag === '모레'){
+      const t = new Date(now); t.setDate(t.getDate() + 2); due = toDateStr(t);
+    } else if(/^\d{1,2}\/\d{1,2}$/.test(tag)){
+      const [mm, dd] = tag.split('/').map(n => parseInt(n, 10));
+      if(mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31){
+        let y = now.getFullYear();
+        const cand = new Date(y, mm - 1, dd);
+        if(cand < new Date(now.getFullYear(), now.getMonth(), now.getDate())) y++;
+        due = toDateStr(new Date(y, mm - 1, dd));
+      }
+    } else if(/^\d{4}-\d{1,2}-\d{1,2}$/.test(tag)){
+      const parts = tag.split('-').map(n => parseInt(n, 10));
+      const cand = new Date(parts[0], parts[1] - 1, parts[2]);
+      if(!isNaN(cand.getTime())) due = toDateStr(cand);
+    }
+    if(due) text = text.replace(dueMatch[0], dueMatch[1] ? ' ' : '').trim();
+  }
+
+  /* Collapse internal whitespace */
+  text = text.replace(/\s+/g, ' ').trim();
+  return { text: text.slice(0, 200), due, recur };
+}
+/* Expose parser for debugging from DevTools: window.pomodoroDebug.parse('!오늘 회의') */
+try {
+  if(typeof window !== 'undefined'){
+    window.pomodoroDebug = Object.assign(window.pomodoroDebug || {}, { parse: parseTodoTags });
+  }
+} catch(e){}
+
+/* Compute next occurrence of a recurring task based on today (or its current due) */
+function nextRecurDue(recur, fromStr){
+  const base = fromStr ? new Date(fromStr + 'T00:00:00') : new Date();
+  if(recur === 'daily'){ base.setDate(base.getDate() + 1); }
+  else if(recur === 'weekly'){ base.setDate(base.getDate() + 7); }
+  else if(recur === 'monthly'){ base.setMonth(base.getMonth() + 1); }
+  return toDateStr(base);
+}
+
+/* Display helpers for due dates */
+function dueLabel(dueStr){
+  if(!dueStr) return '';
+  const d = new Date(dueStr + 'T00:00:00'), today = new Date();
+  today.setHours(0,0,0,0);
+  const diff = Math.round((d - today) / 86400000);
+  if(diff === 0) return '오늘';
+  if(diff === 1) return '내일';
+  if(diff === -1) return '어제';
+  if(diff < 0) return `${-diff}일 지남`;
+  if(diff <= 7) return `${diff}일 뒤`;
+  return `${d.getMonth()+1}/${d.getDate()}`;
+}
+function isOverdue(dueStr){
+  if(!dueStr) return false;
+  const d = new Date(dueStr + 'T00:00:00'), today = new Date();
+  today.setHours(0,0,0,0);
+  return d < today;
+}
+
+const RECUR_LABEL = { daily:'매일', weekly:'매주', monthly:'매월' };
+
+/* Auto-purge completed todos older than 7 days.
+   Privacy default — done items shouldn't accumulate indefinitely on disk. */
+const AUTO_PURGE_MS = 7 * 86400000;
+(function purgeOldCompleted(){
+  const cutoff = Date.now() - AUTO_PURGE_MS;
+  const before = todos.length;
+  todos = todos.filter(t => !(t.d && t.doneAt && t.doneAt < cutoff));
+  if(todos.length !== before) save();
+})();
+
+/* ── Dynamic priority UI ──
+   Generates priority picker buttons and filter tabs from the priorities array. */
+function renderPriUI(){
+  /* Priority picker buttons */
+  const row = $('priRow');
+  const existingLabel = row.querySelector('span');
+  row.innerHTML = '';
+  if(existingLabel) row.appendChild(existingLabel);
+  else { const s = document.createElement('span'); s.textContent = '우선도'; row.appendChild(s); }
+  priorities.forEach(p => {
+    const btn = document.createElement('button');
+    btn.className = 'pb' + (curPri === p.key ? ' on' : '');
+    btn.dataset.p = p.key;
+    btn.style.setProperty('--pc', p.color);
+    btn.textContent = p.label;
+    btn.addEventListener('click', () => {
+      $$('.pb').forEach(x => x.classList.remove('on'));
+      btn.classList.add('on');
+      curPri = p.key;
+    });
+    row.appendChild(btn);
+  });
+
+  /* Filter tabs — keep static "전체"/"미완료", regenerate priority-specific ones */
+  const filtersEl = $('filters');
+  /* Remove old priority filter buttons (keep search input + 전체 + 미완료) */
+  filtersEl.querySelectorAll('.ft[data-f]:not([data-f="all"]):not([data-f="undone"])').forEach(b => b.remove());
+  /* Append dynamic priority filters */
+  priorities.forEach(p => {
+    const btn = document.createElement('button');
+    btn.className = 'ft' + (curFilter === p.key ? ' on' : '');
+    btn.dataset.f = p.key;
+    btn.innerHTML = `${esc(p.label)} <span class="fc" data-fc="${p.key}">0</span>`;
+    filtersEl.appendChild(btn);
+  });
+}
+
+/* Filter tabs — event delegation (handles both static and dynamic buttons) */
+$('filters').addEventListener('click',e=>{
+  const t=e.target.closest('.ft'); if(!t)return;
+  $$('.ft').forEach(x=>x.classList.remove('on')); t.classList.add('on');
+  const f = t.dataset.f;
+  if(f === 'all' || f === 'undone' || priKeys().includes(f)){ curFilter = f; render(); }
+});
+
+/* Realtime search — AND with the active filter tab */
+$('tSearch').addEventListener('input', e => {
+  curSearch = e.target.value.trim();
+  render();
+});
+
+/* Priority label lookups use dynamic priLabel()/priColor() */
+
+function counts(){
+  $('cAll').textContent=todos.length;
+  $('cUnd').textContent=todos.filter(t=>!t.d).length;
+  priorities.forEach(p => {
+    const el = document.querySelector(`[data-fc="${p.key}"]`);
+    if(el) el.textContent = todos.filter(t => t.pri === p.key).length;
+  });
+}
+
+function progress(){
+  let tot=0,dn=0;
+  todos.forEach(t=>{tot++;if(t.d)dn++;(t.subs||[]).forEach(s=>{tot++;if(s.d)dn++;});});
+  const pct=tot?Math.round(dn/tot*100):0;
+  $('progBar').style.width=pct+'%';
+  const lbl=$('progLbl'), cel=$('celeb');
+  if(tot && pct===100){
+    lbl.textContent='\u{1F389}\u{1F38A}\u{1F389}'; lbl.classList.add('done');
+    cel.textContent='\u{1F386} 할 일 완료! \u{1F386}'; cel.classList.add('on');
+  }else{
+    lbl.textContent = tot ? `${dn}/${tot} 완료 (${pct}%)` : '0%';
+    lbl.classList.remove('done'); cel.classList.remove('on');
+  }
+}
+
+function filtered(){
+  const q = curSearch.toLowerCase();
+  const today = todayStr();
+  const indices = todos.reduce((a,t,i)=>{
+    /* Priority / status filter */
+    if(curFilter !== 'all'){
+      if(curFilter === 'undone' && t.d) return a;
+      if(curFilter !== 'undone' && curFilter !== t.pri) return a;
+    }
+    /* Text search — match against the todo title */
+    if(q && !t.t.toLowerCase().includes(q)) return a;
+    a.push(i);
+    return a;
+  },[]);
+  /* Sort: undone overdue/today-due items float to top, done items sink to bottom */
+  indices.sort((a,b) => {
+    const ta = todos[a], tb = todos[b];
+    /* Done items always go to bottom */
+    if(ta.d !== tb.d) return ta.d ? 1 : -1;
+    /* Among undone: overdue/today-due items come first */
+    const aUrgent = !ta.d && ta.due && ta.due <= today;
+    const bUrgent = !tb.d && tb.due && tb.due <= today;
+    if(aUrgent !== bUrgent) return aUrgent ? -1 : 1;
+    return 0; /* preserve original order otherwise */
+  });
+  return indices;
+}
+
+function render(){
+  const list=$('tList'), idx=filtered();
+  counts();
+  /* Preserve scroll position across re-renders */
+  const prevScroll = list.scrollTop;
+  if(!idx.length){
+    const msg = !todos.length
+      ? `<div style="line-height:1.8;">
+          <div style="font-size:13px;margin-bottom:8px;">할 일을 추가해 보세요</div>
+          <div style="font-size:10px;color:var(--muted);text-align:left;display:inline-block;">
+            💡 예시: <b>회의 준비</b><br>
+            📅 마감일: <b>!오늘</b> <b>!내일</b> <b>!12/25</b><br>
+            🔁 반복: <b>@매일</b> <b>@매주</b> <b>@매월</b>
+          </div>
+        </div>`
+      : curSearch   ? `"${esc(curSearch)}" 검색 결과가 없어요`
+      : curFilter==='undone' ? '미완료 항목이 없어요!'
+      : '이 분류에 해당하는 할 일이 없어요';
+    list.innerHTML = `<li class="t-empty">${msg}</li>`;
+    progress(); return;
+  }
+  const activeIdx = getActiveTaskIdx();
+  let h='', n=0;
+  /* Track which todo has an active sub-input so we can focus exactly one */
+  let subInputOwnerIdx = -1;
+  idx.forEach(i=>{
+    const t=todos[i]; n++;
+    h += renderTodoItem(t, i, n, i === activeIdx);
+    if(t.showSub){
+      h+=`<li class="si-row"><input class="si-inp" data-p="${i}" placeholder="하위 할 일..." maxlength="120" autocomplete="off"><button class="si-btn" data-p="${i}">추가</button></li>`;
+      subInputOwnerIdx = i;
+    }
+    (t.subs||[]).forEach((s,si)=>{
+      h+=`<li class="si ${s.d?'done':''}"><div class="si-c" data-pi="${i}" data-si="${si}" role="checkbox" aria-checked="${s.d}">${s.d?'\u2713':''}</div><span class="si-t">${esc(s.t)}</span><button class="si-d" data-pi="${i}" data-si="${si}" aria-label="삭제">&times;</button></li>`;
+    });
+  });
+  list.innerHTML = h;
+  list.scrollTop = prevScroll;
+
+  /* Wire up the (at most one) open sub-input; focus it only */
+  list.querySelectorAll('.si-inp').forEach(inp=>{
+    const pi = toIdx(inp.dataset.p, todos.length);
+    const addSub = () => {
+      if(pi < 0) return;
+      const txt = inp.value.trim().slice(0, 120);
+      if(!txt) return;
+      if((todos[pi].subs || []).length >= 20) return;
+      todos[pi].subs.push({ t: txt, d: false });
+      todos[pi].showSub = false;
+      save(); render();
+    };
+    inp.addEventListener('keydown', e => { if(e.key === 'Enter') addSub(); });
+    const btn = inp.nextElementSibling;
+    if(btn) btn.addEventListener('click', addSub);
+    if(pi === subInputOwnerIdx){
+      setTimeout(() => { try{ inp.scrollIntoView({block:'nearest',behavior:'smooth'}); inp.focus(); }catch(e){} }, 0);
+    }
+  });
+  progress();
+}
+
+/* Render a single todo <li> — extracted so render() stays readable.
+   i = original index in todos[], n = display number (1-based after filter). */
+function renderTodoItem(t, i, n, isActive){
+  const e = esc(t.t);
+  const pc = priColor(t.pri);
+  /* Priority dropdown with inline 뽀모도로 시작 */
+  const priOptions = priKeys().map(p =>
+    `<button class="ti-pri-opt${t.pri===p?' active':''}" data-pi2="${i}" data-pr="${p}">${esc(priLabel(p))}</button>`
+  ).join('');
+  const priDd = `<div class="ti-pri-wrap"><button class="ti-pri-btn" data-pd="${i}" aria-label="우선도 변경">▼</button><div class="ti-pri-dd" data-dd="${i}">${priOptions}<button class="ti-pri-opt pomo-start" data-pomo-start="${i}">뽀모도로 시작</button></div></div>`;
+  /* Badges: pomodoro count, due date (with overdue/today color), recurrence */
+  let badges = '';
+  if(t.pomoCount > 0) badges += `<span class="ti-pomo-badge">\u00D7${t.pomoCount}</span>`;
+  if(t.due){
+    const cls = isOverdue(t.due) ? 'overdue' : (t.due === todayStr() ? 'today' : '');
+    badges += `<span class="ti-due ${cls}">${esc(dueLabel(t.due))}</span>`;
+  }
+  if(t.recur) badges += `<span class="ti-recur">${RECUR_LABEL[t.recur]}</span>`;
+  /* Assemble */
+  const doneCls = t.d ? 'done' : '';
+  const activeCls = isActive ? 'active-pomo' : '';
+  return `<li class="ti ${doneCls} ${activeCls}" style="--pc:${pc}" draggable="true" data-drag="${i}">`
+       + `<div class="ti-pri-bar" aria-hidden="true"></div>`
+       + `<div class="ti-n" data-i="${i}" role="checkbox" aria-checked="${t.d}">${n}</div>`
+       + `<span class="ti-t">${e}</span>`
+       + badges
+       + `<button class="ti-edit" data-edit="${i}" aria-label="편집">&#9998;</button>`
+       + priDd
+       + `<div class="ti-acts"><button class="ti-sub" data-s="${i}" aria-label="하위 할 일 추가">+</button><button class="ti-del" data-i="${i}" aria-label="삭제">&times;</button></div>`
+       + `</li>`;
+}
+
+$('tList').addEventListener('click',e=>{
+  /* "Start pomodoro" option (inside priority dropdown) */
+  const pomoStart = e.target.closest('[data-pomo-start]');
+  if(pomoStart){
+    const i = toIdx(pomoStart.dataset.pomoStart, todos.length);
+    $$('.ti-pri-dd').forEach(d => d.classList.remove('open'));
+    if(i >= 0) startPomodoroForTask(i);
+    return;
+  }
+  /* Edit icon — enter inline edit mode */
+  const editBtn = e.target.closest('[data-edit]');
+  if(editBtn){
+    const i = toIdx(editBtn.dataset.edit, todos.length);
+    if(i >= 0) enterEdit(i);
+    return;
+  }
+  /* Priority dropdown toggle */
+  const pdBtn = e.target.closest('.ti-pri-btn');
+  if(pdBtn){
+    e.stopPropagation();
+    const dd = pdBtn.nextElementSibling;
+    $$('.ti-pri-dd').forEach(d => { if(d !== dd) d.classList.remove('open'); });
+    if(dd) dd.classList.toggle('open');
+    return;
+  }
+  /* Priority option select */
+  const opt = e.target.closest('.ti-pri-opt');
+  if(opt && opt.dataset.pi2 !== undefined){
+    const i = toIdx(opt.dataset.pi2, todos.length);
+    const pr = opt.dataset.pr;
+    if(i >= 0 && priKeys().includes(pr)){
+      todos[i].pri = pr;
+      save(); render();
+    }
+    return;
+  }
+  /* Other actions */
+  const el = e.target.closest('[data-i],[data-s],[data-pi]');
+  if(!el) return;
+
+  if(el.classList.contains('ti-n')){
+    const i = toIdx(el.dataset.i, todos.length);
+    if(i < 0) return;
+    const newDone = !todos[i].d;
+    todos[i].d = newDone;
+    todos[i].doneAt = newDone ? Date.now() : null;
+    /* If a recurring task was just completed, spawn the next occurrence */
+    if(newDone && todos[i].recur && todos.length < 200){
+      const next = nextRecurDue(todos[i].recur, todos[i].due || todayStr());
+      const copy = {
+        t: todos[i].t, d: false, subs: [], showSub: false,
+        pri: todos[i].pri, doneAt: null, pomoCount: 0,
+        due: next, recur: todos[i].recur, createdAt: Date.now()
+      };
+      todos.push(copy);
+    }
+  }else if(el.classList.contains('ti-del')){
+    const i = toIdx(el.dataset.i, todos.length);
+    if(i < 0) return;
+    /* Save for undo before removing */
+    const removed = todos[i];
+    const removedIdx = i;
+    /* Clear active task if it was the deleted one */
+    if(todos[i].createdAt === activeTaskId) activeTaskId = null;
+    todos.splice(i, 1);
+    updateActiveTaskUI();
+    save();
+    render();
+    /* Show undo bar for 3 seconds */
+    showUndo(removed, removedIdx);
+    return;
+  }else if(el.classList.contains('ti-sub')){
+    const i = toIdx(el.dataset.s, todos.length);
+    if(i < 0) return;
+    const willOpen = !todos[i].showSub;
+    todos.forEach(t => { t.showSub = false; });
+    todos[i].showSub = willOpen;
+  }else if(el.classList.contains('si-c')){
+    const pi = toIdx(el.dataset.pi, todos.length);
+    if(pi < 0) return;
+    const si = toIdx(el.dataset.si, (todos[pi].subs || []).length);
+    if(si < 0) return;
+    todos[pi].subs[si].d = !todos[pi].subs[si].d;
+  }else if(el.classList.contains('si-d')){
+    const pi = toIdx(el.dataset.pi, todos.length);
+    if(pi < 0) return;
+    const si = toIdx(el.dataset.si, (todos[pi].subs || []).length);
+    if(si < 0) return;
+    todos[pi].subs.splice(si, 1);
+  }else return;
+
+  save(); render();
+});
+
+/* ── Inline edit — triggered by hover edit icon ── */
+function enterEdit(idx){
+  const t = todos[idx]; if(!t) return;
+  const li = document.querySelector(`.ti[data-drag="${idx}"]`);
+  if(!li) return;
+  li.classList.add('editing');
+
+  /* Build the editor panel */
+  const panel = document.createElement('div');
+  panel.className = 'ti-editor';
+
+  /* Row 1: text input (tags stripped) + save button */
+  const inp = document.createElement('input');
+  inp.type = 'text';
+  inp.className = 'ti-editor-text';
+  inp.maxLength = 200;
+  inp.value = t.t;
+  inp.placeholder = '할 일 내용';
+
+  const saveBtn = document.createElement('button');
+  saveBtn.type = 'button';
+  saveBtn.className = 'ti-editor-save';
+  saveBtn.textContent = '저장';
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'ti-editor-cancel';
+  cancelBtn.setAttribute('aria-label', '취소');
+  cancelBtn.textContent = '\u00D7';
+
+  const row1 = document.createElement('div');
+  row1.className = 'ti-editor-row';
+  row1.appendChild(inp);
+  row1.appendChild(saveBtn);
+  row1.appendChild(cancelBtn);
+
+  /* Row 2: due chips */
+  const dueRow = document.createElement('div');
+  dueRow.className = 'ti-editor-chips';
+
+  const dueLbl = document.createElement('span');
+  dueLbl.className = 'ti-editor-lbl';
+  dueLbl.textContent = '마감';
+  dueRow.appendChild(dueLbl);
+
+  /* Local edit-state — committed only on Save */
+  let editState = {
+    text: t.t,
+    due: t.due,
+    recur: t.recur,
+  };
+
+  const DUE_PRESETS = [
+    { key: 'none',     label: '없음',   tooltip: '마감일 없음' },
+    { key: 'today',    label: '오늘',   tooltip: '오늘까지' },
+    { key: 'tomorrow', label: '내일',   tooltip: '내일까지' },
+    { key: 'day2',     label: '모레',   tooltip: '모레까지' },
+    { key: 'week',     label: '1주',    tooltip: '일주일 뒤' },
+    { key: 'custom',   label: '날짜\u2026', tooltip: '직접 지정' },
+  ];
+  function dateOffsetStr(days){
+    const d = new Date(); d.setDate(d.getDate() + days); return toDateStr(d);
+  }
+  function dueKeyFromStr(s){
+    if(!s) return 'none';
+    if(s === todayStr()) return 'today';
+    if(s === dateOffsetStr(1)) return 'tomorrow';
+    if(s === dateOffsetStr(2)) return 'day2';
+    if(s === dateOffsetStr(7)) return 'week';
+    return 'custom';
+  }
+  /* Hidden native date input for custom date picking (fallback-friendly) */
+  const dateInput = document.createElement('input');
+  dateInput.type = 'date';
+  dateInput.className = 'ti-editor-date-hidden';
+  dateInput.setAttribute('aria-hidden', 'true');
+  dateInput.tabIndex = -1;
+
+  function renderDueChips(){
+    [...dueRow.querySelectorAll('.ti-chip')].forEach(x => x.remove());
+    const curKey = dueKeyFromStr(editState.due);
+    DUE_PRESETS.forEach(p => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ti-chip' + (curKey === p.key ? ' on' : '');
+      btn.dataset.dueKey = p.key;
+      btn.title = p.tooltip;
+      /* If custom is active, show the actual date in the chip label */
+      if(p.key === 'custom' && curKey === 'custom' && editState.due){
+        btn.textContent = editState.due.slice(5).replace('-', '/');
+      } else {
+        btn.textContent = p.label;
+      }
+      btn.addEventListener('click', () => {
+        if(p.key === 'none'){ editState.due = null; }
+        else if(p.key === 'today'){ editState.due = todayStr(); }
+        else if(p.key === 'tomorrow'){ editState.due = dateOffsetStr(1); }
+        else if(p.key === 'day2'){ editState.due = dateOffsetStr(2); }
+        else if(p.key === 'week'){ editState.due = dateOffsetStr(7); }
+        else if(p.key === 'custom'){
+          dateInput.value = editState.due || todayStr();
+          /* Some browsers support showPicker; fallback to click */
+          try { if(typeof dateInput.showPicker === 'function') dateInput.showPicker(); else dateInput.click(); }
+          catch(e){ dateInput.click(); }
+          return; /* wait for change event */
+        }
+        renderDueChips();
+      });
+      dueRow.appendChild(btn);
+    });
+  }
+  dateInput.addEventListener('change', () => {
+    const v = dateInput.value;
+    if(/^\d{4}-\d{2}-\d{2}$/.test(v)){
+      editState.due = v;
+      renderDueChips();
+    }
+  });
+  dueRow.appendChild(dateInput);
+  renderDueChips();
+
+  /* Row 2b: direct date text input (YYYY-MM-DD / MM/DD / MM-DD) */
+  const dueTextRow = document.createElement('div');
+  dueTextRow.className = 'ti-editor-chips ti-editor-duetext';
+  const dueTextLbl = document.createElement('span');
+  dueTextLbl.className = 'ti-editor-lbl';
+  dueTextLbl.textContent = '직접';
+  dueTextRow.appendChild(dueTextLbl);
+
+  const dueTextInp = document.createElement('input');
+  dueTextInp.type = 'text';
+  dueTextInp.className = 'ti-editor-duetext-inp';
+  dueTextInp.placeholder = '예: 2026-04-25 또는 4/25';
+  dueTextInp.maxLength = 20;
+  dueTextInp.autocomplete = 'off';
+  dueTextInp.spellcheck = false;
+  if(editState.due) dueTextInp.value = editState.due;
+
+  const dueTextApply = document.createElement('button');
+  dueTextApply.type = 'button';
+  dueTextApply.className = 'ti-editor-duetext-btn';
+  dueTextApply.textContent = '확인';
+
+  const dueTextErr = document.createElement('span');
+  dueTextErr.className = 'ti-editor-duetext-err';
+
+  /* Parse a due-date string using the same rules as parseTodoTags.
+     Returns YYYY-MM-DD or null. Does NOT throw on invalid input. */
+  function parseDueText(raw){
+    const v = String(raw || '').trim();
+    if(!v) return { kind: 'none' };
+    /* Keywords */
+    if(v === '오늘') return { kind: 'ok', date: todayStr() };
+    if(v === '내일') return { kind: 'ok', date: dateOffsetStr(1) };
+    if(v === '모레') return { kind: 'ok', date: dateOffsetStr(2) };
+    /* YYYY-MM-DD */
+    let m = v.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if(m){
+      const y = +m[1], mo = +m[2], d = +m[3];
+      if(mo >= 1 && mo <= 12 && d >= 1 && d <= 31){
+        return { kind: 'ok', date: `${y}-${pad(mo)}-${pad(d)}` };
+      }
+    }
+    /* MM/DD or MM-DD — current year, auto-roll to next year if past */
+    m = v.match(/^(\d{1,2})[\/\-](\d{1,2})$/);
+    if(m){
+      const mo = +m[1], d = +m[2];
+      if(mo >= 1 && mo <= 12 && d >= 1 && d <= 31){
+        const now = new Date();
+        let y = now.getFullYear();
+        const candidate = `${y}-${pad(mo)}-${pad(d)}`;
+        if(candidate < todayStr()) y += 1;
+        return { kind: 'ok', date: `${y}-${pad(mo)}-${pad(d)}` };
+      }
+    }
+    return { kind: 'bad' };
+  }
+
+  function applyDueText(){
+    const res = parseDueText(dueTextInp.value);
+    if(res.kind === 'bad'){
+      dueTextErr.textContent = '형식을 다시 확인해주세요';
+      dueTextInp.classList.add('err');
+      return;
+    }
+    dueTextErr.textContent = '';
+    dueTextInp.classList.remove('err');
+    editState.due = (res.kind === 'ok') ? res.date : null;
+    renderDueChips();
+  }
+  dueTextApply.addEventListener('click', e => { e.preventDefault(); applyDueText(); });
+  dueTextInp.addEventListener('keydown', e => {
+    if(e.key === 'Enter'){ e.preventDefault(); applyDueText(); }
+  });
+
+  dueTextRow.appendChild(dueTextInp);
+  dueTextRow.appendChild(dueTextApply);
+  dueTextRow.appendChild(dueTextErr);
+
+  renderDueChips();
+
+  /* Row 3: recurrence chips */
+  const recurRow = document.createElement('div');
+  recurRow.className = 'ti-editor-chips';
+  const recurLbl = document.createElement('span');
+  recurLbl.className = 'ti-editor-lbl';
+  recurLbl.textContent = '반복';
+  recurRow.appendChild(recurLbl);
+
+  const RECUR_PRESETS = [
+    { key: null,      label: '없음' },
+    { key: 'daily',   label: '매일' },
+    { key: 'weekly',  label: '매주' },
+    { key: 'monthly', label: '매월' },
+  ];
+  function renderRecurChips(){
+    [...recurRow.querySelectorAll('.ti-chip')].forEach(x => x.remove());
+    RECUR_PRESETS.forEach(p => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ti-chip' + (editState.recur === p.key ? ' on' : '');
+      btn.textContent = p.label;
+      btn.addEventListener('click', () => {
+        editState.recur = p.key;
+        renderRecurChips();
+      });
+      recurRow.appendChild(btn);
+    });
+  }
+  renderRecurChips();
+
+  /* Assemble panel */
+  panel.appendChild(row1);
+  panel.appendChild(dueRow);
+  panel.appendChild(dueTextRow);
+  panel.appendChild(recurRow);
+  li.appendChild(panel);
+
+  /* Next-frame trigger so the CSS transition from 0 → 1 opacity actually runs */
+  requestAnimationFrame(() => panel.classList.add('show'));
+
+  inp.focus(); inp.select();
+
+  /* Commit / cancel */
+  let committed = false;
+  /* Animate the editor closed before re-rendering */
+  const closeEditor = (afterClose) => {
+    panel.classList.remove('show');
+    panel.classList.add('closing');
+    setTimeout(() => { afterClose(); }, 160);
+  };
+  const commit = () => {
+    if(committed) return; committed = true;
+    const raw = inp.value.trim().slice(0, 200);
+    if(!raw){ closeEditor(() => render()); return; }
+    const parsed = parseTodoTags(raw);
+    todos[idx].t = parsed.text || inp.value.trim().slice(0, 200);
+    todos[idx].due = (parsed.due !== null && parsed.due !== undefined) ? parsed.due : editState.due;
+    todos[idx].recur = (parsed.recur !== null && parsed.recur !== undefined) ? parsed.recur : editState.recur;
+    save();
+    closeEditor(() => render());
+  };
+  const cancel = () => {
+    if(committed) return; committed = true;
+    closeEditor(() => render());
+  };
+
+  inp.addEventListener('keydown', e => {
+    if(e.key === 'Enter'){ e.preventDefault(); commit(); }
+    else if(e.key === 'Escape'){ e.preventDefault(); cancel(); }
+  });
+  /* Also catch ESC when focus is on a chip or the date picker inside the editor */
+  panel.addEventListener('keydown', e => {
+    if(e.key === 'Escape' && e.target !== inp){ e.preventDefault(); cancel(); }
+  });
+  saveBtn.addEventListener('click', e => { e.preventDefault(); commit(); });
+  cancelBtn.addEventListener('click', e => { e.preventDefault(); cancel(); });
+
+  /* Close when clicking outside the editor */
+  const onDocClick = (e) => {
+    if(committed) return;
+    if(!panel.contains(e.target) && !li.contains(e.target)){
+      document.removeEventListener('mousedown', onDocClick);
+      commit();
+    }
+  };
+  setTimeout(() => document.addEventListener('mousedown', onDocClick), 0);
+}
+
+/* ── Drag-and-drop reorder ── */
+let dragSrcIdx = -1;
+$('tList').addEventListener('dragstart', e => {
+  const li = e.target.closest('.ti[data-drag]');
+  if(!li) return;
+  dragSrcIdx = toIdx(li.dataset.drag, todos.length);
+  li.classList.add('dragging');
+  try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(dragSrcIdx)); } catch(err){}
+});
+$('tList').addEventListener('dragover', e => {
+  if(dragSrcIdx < 0) return;
+  e.preventDefault();
+  try { e.dataTransfer.dropEffect = 'move'; } catch(err){}
+  const li = e.target.closest('.ti[data-drag]');
+  $$('.ti.drag-over').forEach(x => x.classList.remove('drag-over'));
+  if(li) li.classList.add('drag-over');
+});
+$('tList').addEventListener('dragleave', e => {
+  const li = e.target.closest('.ti[data-drag]');
+  if(li) li.classList.remove('drag-over');
+});
+$('tList').addEventListener('drop', e => {
+  e.preventDefault();
+  $$('.ti.drag-over').forEach(x => x.classList.remove('drag-over'));
+  $$('.ti.dragging').forEach(x => x.classList.remove('dragging'));
+  const li = e.target.closest('.ti[data-drag]');
+  if(!li || dragSrcIdx < 0){ dragSrcIdx = -1; return; }
+  const dst = toIdx(li.dataset.drag, todos.length);
+  if(dst < 0 || dst === dragSrcIdx){ dragSrcIdx = -1; return; }
+  const [moved] = todos.splice(dragSrcIdx, 1);
+  todos.splice(dst, 0, moved);
+  dragSrcIdx = -1;
+  save(); render();
+});
+$('tList').addEventListener('dragend', () => {
+  dragSrcIdx = -1;
+  $$('.ti.drag-over,.ti.dragging').forEach(x => x.classList.remove('drag-over','dragging'));
+});
+
+function addTodo(){
+  if(todos.length >= 200) return;
+  const inp = $('tInp');
+  const raw = inp.value.trim().slice(0, 200);
+  if(!raw) return;
+  const parsed = parseTodoTags(raw);
+  /* Require non-empty text after tag stripping — otherwise show input back with warning */
+  if(!parsed.text){
+    inp.value = raw;
+    inp.focus();
+    return;
+  }
+  todos.push({
+    t: parsed.text,
+    d: false, subs: [], showSub: false, pri: curPri,
+    doneAt: null, pomoCount: 0,
+    due: parsed.due, recur: parsed.recur,
+    createdAt: Date.now()
+  });
+  inp.value = '';
+  save(); render();
+}
+$('tAdd').addEventListener('click',addTodo);
+$('tInp').addEventListener('keydown',e=>{if(e.key==='Enter')addTodo();});
+document.addEventListener('click',()=>$$('.ti-pri-dd').forEach(d=>d.classList.remove('open')));
+renderPriUI();
+render();
+
+/* ── Undo delete (3-second window) ── */
+let undoTimer = null;
+function showUndo(removed, removedIdx){
+  /* Cancel any previous undo timer */
+  if(undoTimer){ clearTimeout(undoTimer); undoTimer = null; }
+  const bar = $('undoBar');
+  bar.classList.add('on');
+  /* Auto-hide after 3 seconds */
+  undoTimer = setTimeout(() => { bar.classList.remove('on'); undoTimer = null; }, 3000);
+  /* Wire the undo button (fresh handler each time) */
+  $('undoBtn').onclick = () => {
+    if(undoTimer){ clearTimeout(undoTimer); undoTimer = null; }
+    bar.classList.remove('on');
+    /* Re-insert at original position (or end if out of range) */
+    const idx = Math.min(removedIdx, todos.length);
+    todos.splice(idx, 0, removed);
+    save(); render();
+  };
+}
+
+/* ── Tag guide toggle ── */
+$('tagGuideToggle').addEventListener('click', () => {
+  $('tagGuide').classList.toggle('open');
+});
+
+/* Active task clear button */
+$('activeTaskClear').addEventListener('click', clearActiveTask);
+updateActiveTaskUI();
+
+/* Resume timer correctly if the tab is brought back to focus —
+   recalculates `remain` from the wall-clock anchor immediately. */
+document.addEventListener('visibilitychange', ()=>{
+  if(!document.hidden && active){
+    const left = Math.max(0, Math.round((endTimeMs - Date.now()) / 1000));
+    if(left !== remain){ remain = left; display(); updateAdjustButtons(); }
+    if(remain <= 0){ stop(); onEnd(); }
+  }
+});
+
+/* ── Hide toggle ── */
+let hidden = !!ls(LS_KEYS.HIDDEN);
+const todoCard = document.querySelector('.todo-card');
+const hideBtn = $('hideBtn');
+const hideIco = $('hideIco');
+const hideOverlay = $('hideOverlay');
+
+/* Eye icons — path 'd' attribute is swapped based on state.
+   The icon shows the ACTION that clicking will perform. */
+const EYE_SHOW = 'M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z';
+const EYE_HIDE = 'M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z';
+
+function applyHide(){
+  todoCard.classList.toggle('hidden', hidden);
+  hideIco.setAttribute('d', hidden ? EYE_SHOW : EYE_HIDE);
+  const lbl = hidden ? '할 일 보기' : '할 일 가리기';
+  hideBtn.title = lbl;
+  hideBtn.setAttribute('aria-label', lbl);
+  /* Close any open priority dropdowns when hiding */
+  if(hidden) $$('.ti-pri-dd').forEach(d => d.classList.remove('open'));
+}
+function toggleHide(){
+  hidden = !hidden;
+  ls(LS_KEYS.HIDDEN, hidden);
+  applyHide();
+}
+hideBtn.addEventListener('click', toggleHide);
+hideOverlay.addEventListener('click', toggleHide);
+applyHide();
+
+/* ── Mute toggle ── */
+$('btnMute').addEventListener('click', () => setMute(!mute));
+setMute(mute); /* Sync initial UI from persisted state */
+
+/* ── Advanced stats settings ── */
+/* Stat range: number of days in the bar chart. Allowed: 7 | 14 | 30. */
+let statRange = (function(){
+  const v = ls(LS_KEYS.STAT_RANGE);
+  return (v === 7 || v === 14 || v === 30) ? v : 14;
+})();
+/* Week start: 0 = Sunday, 1 = Monday. Default: 1 (Korean/ISO convention). */
+let weekStartDay = (function(){
+  const v = ls(LS_KEYS.WEEK_START);
+  return (v === 0 || v === 1) ? v : 1;
+})();
+
+function setStatRange(n){
+  if(n !== 7 && n !== 14 && n !== 30) return;
+  statRange = n;
+  ls(LS_KEYS.STAT_RANGE, n);
+  renderAdvChips();
+  if($('viewStats').classList.contains('on')) renderFullStats();
+}
+function setWeekStartDay(n){
+  if(n !== 0 && n !== 1) return;
+  weekStartDay = n;
+  ls(LS_KEYS.WEEK_START, n);
+  renderAdvChips();
+  if($('viewStats').classList.contains('on')) renderFullStats();
+}
+function renderAdvChips(){
+  $$('#advRange .adv-chip').forEach(b => b.classList.toggle('on', +b.dataset.range === statRange));
+  $$('#advWeekStart .adv-chip').forEach(b => b.classList.toggle('on', +b.dataset.week === weekStartDay));
+}
+
+/* Chip click handlers */
+$$('#advRange .adv-chip').forEach(btn => {
+  btn.addEventListener('click', () => setStatRange(+btn.dataset.range));
+});
+$$('#advWeekStart .adv-chip').forEach(btn => {
+  btn.addEventListener('click', () => setWeekStartDay(+btn.dataset.week));
+});
+
+/* ── View layout (which cards are visible) ── */
+/* Load persisted layout; fall back to "show everything" */
+let layout = (function(){
+  const v = ls(LS_KEYS.LAYOUT);
+  if(v && typeof v === 'object' && !Array.isArray(v)){
+    return {
+      timer: v.timer !== false,
+      todo:  v.todo  !== false,
+      clock: v.clock !== false,
+    };
+  }
+  return { timer: true, todo: true, clock: true };
+})();
+
+/* Apply the current layout to the grid: hide disabled cards and set a single
+   layout class that drives the grid-template overrides in CSS. */
+function applyLayout(){
+  const g = document.querySelector('.grid');
+  if(!g) return;
+  /* Clean previous layout classes */
+  g.classList.remove('no-timer','no-todo','no-clock','only-timer','only-todo','only-clock');
+  /* Always mark hidden cards so CSS can display:none them */
+  if(!layout.timer) g.classList.add('no-timer');
+  if(!layout.todo)  g.classList.add('no-todo');
+  if(!layout.clock) g.classList.add('no-clock');
+  /* When only one card remains, add an only-* class for full-width grid */
+  const shown = ['timer','todo','clock'].filter(k => layout[k]);
+  if(shown.length === 1) g.classList.add('only-' + shown[0]);
+  /* Sync checkbox states (for external callers, e.g. on load) */
+  $$('#advLayout input[type="checkbox"]').forEach(cb => {
+    cb.checked = !!layout[cb.dataset.lay];
+  });
+}
+
+function setLayoutOption(key, value){
+  if(!['timer','todo','clock'].includes(key)) return;
+  const next = { ...layout, [key]: !!value };
+  /* Guard: at least one card must remain visible */
+  if(!next.timer && !next.todo && !next.clock){
+    applyLayout(); /* re-sync the UI to reject the change */
+    return;
+  }
+  layout = next;
+  ls(LS_KEYS.LAYOUT, layout);
+  applyLayout();
+}
+
+$$('#advLayout input[type="checkbox"]').forEach(cb => {
+  cb.addEventListener('change', () => {
+    setLayoutOption(cb.dataset.lay, cb.checked);
+  });
+});
+
+/* Collapsible toggle */
+$('advChev').parentElement.addEventListener('click', () => {
+  const sec = $('advChev').closest('.adv-sec');
+  if(sec) sec.classList.toggle('open');
+});
+
+renderAdvChips();
+applyLayout();
+
+/* ── Dark mode ── */
+function applyDark(){
+  document.body.classList.toggle('dark', darkMode);
+  /* Clear any previously set surface vars, then let setTheme re-apply
+     the correct ones (light from T[theme] or dark from TD[theme]). */
+  const r = document.documentElement;
+  DARK_SURFACE.forEach(k => r.style.removeProperty(k));
+  setTheme(theme);
+  const btn = $('btnDark');
+  if(btn){
+    btn.textContent = darkMode ? '켜짐' : '꺼짐';
+    btn.classList.toggle('on', darkMode);
+  }
+}
+function toggleDark(){
+  darkMode = !darkMode;
+  ls(LS_KEYS.DARK, darkMode);
+  applyDark();
+}
+$('btnDark').addEventListener('click', toggleDark);
+applyDark();
+
+/* ── Priority editor (advanced settings) ── */
+function renderPriEditor(){
+  const container = $('priEditor');
+  if(!container) return;
+  container.innerHTML = '';
+  priorities.forEach((p, idx) => {
+    const row = document.createElement('div');
+    row.className = 'pri-editor-row';
+    /* Color picker */
+    const colorWrap = document.createElement('div');
+    colorWrap.className = 'pri-editor-color';
+    colorWrap.style.background = p.color;
+    const colorInp = document.createElement('input');
+    colorInp.type = 'color';
+    colorInp.value = p.color;
+    colorInp.addEventListener('input', () => {
+      p.color = colorInp.value;
+      colorWrap.style.background = colorInp.value;
+      savePriorities();
+      renderPriUI();
+      render();
+    });
+    colorWrap.appendChild(colorInp);
+    row.appendChild(colorWrap);
+    /* Name input */
+    const nameInp = document.createElement('input');
+    nameInp.type = 'text';
+    nameInp.className = 'pri-editor-name';
+    nameInp.value = p.label;
+    nameInp.maxLength = 12;
+    nameInp.placeholder = '이름';
+    nameInp.addEventListener('change', () => {
+      const v = nameInp.value.trim().slice(0, 12);
+      if(!v) { nameInp.value = p.label; return; }
+      p.label = v;
+      savePriorities();
+      renderPriUI();
+      render();
+    });
+    row.appendChild(nameInp);
+    /* Delete button (only if more than 2 priorities) */
+    if(priorities.length > 2){
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'pri-editor-del';
+      del.textContent = '\u00D7';
+      del.title = '삭제';
+      del.addEventListener('click', () => {
+        if(priorities.length <= 2) return;
+        const removedKey = p.key;
+        priorities.splice(idx, 1);
+        /* Reassign orphaned todos to first remaining priority */
+        const fallback = priDefault();
+        todos.forEach(t => { if(t.pri === removedKey) t.pri = fallback; });
+        if(curPri === removedKey) curPri = fallback;
+        if(curFilter === removedKey) curFilter = 'all';
+        save();
+        savePriorities();
+        renderPriEditor();
+        renderPriUI();
+        render();
+      });
+      row.appendChild(del);
+    }
+    container.appendChild(row);
+  });
+  /* Show/hide add button */
+  const addBtn = $('priAddBtn');
+  if(addBtn) addBtn.style.display = priorities.length >= MAX_PRI ? 'none' : '';
+}
+$('priAddBtn').addEventListener('click', () => {
+  if(priorities.length >= MAX_PRI) return;
+  const key = nextPriKey();
+  if(!key) return;
+  /* Default colors — p4/p5 are lighter tints of p1 coral and p2 green
+     for a cohesive palette: coral → green → gray → light coral → light green */
+  const color = ['#e87c5c','#4a8f6b','#a0a0a0','#f0a898','#7ab89a'][priorities.length] || '#a0a0a0';
+  priorities.push({ key, label: '새 우선도', color });
+  savePriorities();
+  renderPriEditor();
+  renderPriUI();
+  render();
+});
+renderPriEditor();
+
+/* ── Data export (JSON download) ── */
+$('btnExport').addEventListener('click', ()=>{
+  try {
+    const data = {
+      version: 3,
+      exportedAt: new Date().toISOString(),
+      todos: todos.map(t => ({
+        t: t.t, d: t.d, pri: t.pri,
+        subs: (t.subs || []).map(s => ({ t: s.t, d: s.d })),
+        doneAt: t.doneAt || null,
+        pomoCount: t.pomoCount || 0,
+        due: t.due || null,
+        recur: t.recur || null,
+        createdAt: t.createdAt || null
+      })),
+      cfg: Object.assign({}, cfg),
+      theme: theme,
+      stats: Object.assign({}, stats),
+      priorities: priorities.map(p => ({key: p.key, label: p.label, color: p.color})),
+      memos: (function(){
+        try { const v = ls(LS_KEYS.MEMOS); return Array.isArray(v) ? v : []; }
+        catch(e){ return []; }
+      })()
+    };
+    const json = JSON.stringify(data, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'pomodoro-backup-' + new Date().toISOString().slice(0,10) + '.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch(e) {
+    console.warn('[pomodoro] export failed:', e);
+    alert('내보내기에 실패했어요. 브라우저 설정을 확인해주세요.');
+  }
+});
+
+/* ── Data reset (double confirm for safety) ──
+   Iterates LS_KEYS so adding a new persistent key automatically gets cleared. */
+$('btnDataReset').addEventListener('click', async ()=>{
+  if(!await customConfirm('모두 삭제', '모든 할 일과 설정을 삭제하고 초기 상태로 돌아갑니다.\n계속하시겠어요?')) return;
+  if(!await customConfirm('정말 삭제할까요?', '이 작업은 되돌릴 수 없어요.')) return;
+  try {
+    Object.values(LS_KEYS).forEach(k => localStorage.removeItem(k));
+  } catch(e) {
+    console.warn('[pomodoro] reset failed:', e);
+  }
+  location.reload();
+});
+
+/* Help modal */
+const helpOv = $('helpOverlay');
+$('btnHelp').addEventListener('click', () => helpOv.classList.add('on'));
+$('helpClose').addEventListener('click', () => helpOv.classList.remove('on'));
+$('helpCloseX').addEventListener('click', () => helpOv.classList.remove('on'));
+helpOv.addEventListener('click', e => { if(e.target === helpOv) helpOv.classList.remove('on'); });
+
+/* Global ESC — closes whichever modal is open (settings / help).
+   Alert toast is intentionally blocking and must be dismissed via the button. */
+/* Global keyboard shortcuts.
+   - Esc: close whichever modal is open (settings / help). Alert toast is excluded on purpose.
+   - Space: toggle timer start/pause (only when nothing input-like is focused).
+   - /: focus the todo input.
+   Inputs / textareas / contenteditable take priority — never hijack their keys. */
+document.addEventListener('keydown', e => {
+  /* Determine if the user is currently typing somewhere */
+  const a = document.activeElement;
+  const typing = a && (
+    a.tagName === 'INPUT' ||
+    a.tagName === 'TEXTAREA' ||
+    a.isContentEditable
+  );
+
+  if(e.key === 'Escape'){
+    if(ov.classList.contains('on')){ ov.classList.remove('on'); e.preventDefault(); return; }
+    if(helpOv.classList.contains('on')){ helpOv.classList.remove('on'); e.preventDefault(); return; }
+    if($('memoListOv').classList.contains('on')){ $('memoListOv').classList.remove('on'); e.preventDefault(); return; }
+    return;
+  }
+  if(typing) return; /* The rest of the shortcuts are dangerous while typing */
+  if(e.key === ' ' || e.code === 'Space'){
+    /* Don't trigger while any modal is open — would be unexpected */
+    if(ov.classList.contains('on') || helpOv.classList.contains('on') || $('memoListOv').classList.contains('on')) return;
+    /* Don't trigger if the alert toast is showing — clicking its buttons is the correct path */
+    if($('toast').classList.contains('on')) return;
+    e.preventDefault();
+    $('btnPlay').click();
+    return;
+  }
+  if(e.key === '/'){
+    if(ov.classList.contains('on') || helpOv.classList.contains('on') || $('memoListOv').classList.contains('on')) return;
+    /* Only focus todo input on the timer view; on stats view '/' should be a plain character */
+    if(!$('viewTimer').classList.contains('on')) return;
+    e.preventDefault();
+    try { $('tInp').focus(); } catch(err){}
+    return;
+  }
+});
+
+/* ═══════════════════════════════════════════════════════════════════
+   ── Memo module ──
+   Lightweight notes with title + body, plus a toolbar for font size,
+   bullet/number prefixes, and clipboard copy. Memos persist in
+   LS_KEYS.MEMOS (sorted newest-first by updatedAt). The current edit
+   buffer (id + title + content) is mirrored into LS_KEYS.MEMO_DRAFT
+   on every keystroke so an accidental tab close doesn't lose work.
+   ═══════════════════════════════════════════════════════════════════ */
+const Memo = (function(){
+  const MAX_TITLE = 80;
+  const MAX_BODY  = 20000;
+  const MAX_MEMOS = 200;
+  const FONTS = ['sm','md','lg'];
+  const FONT_LBL = { sm:'작게', md:'보통', lg:'크게' };
+  const CIRCLED = ['\u2460','\u2461','\u2462','\u2463','\u2464','\u2465','\u2466','\u2467','\u2468','\u2469',
+                   '\u246A','\u246B','\u246C','\u246D','\u246E','\u246F','\u2470','\u2471','\u2472','\u2473']; /* ① ~ ⑳ */
+
+  /* State */
+  let memos = sanitizeMemos(ls(LS_KEYS.MEMOS)) || [];
+  let draft = sanitizeDraft(ls(LS_KEYS.MEMO_DRAFT)) || newDraft();
+  let font  = (function(){ const v = ls(LS_KEYS.MEMO_FONT); return FONTS.includes(v) ? v : 'md'; })();
+  let saveStatusTimer = null;
+
+  /* ── Sanitizers ── */
+  function sanitizeMemo(m){
+    if(!m || typeof m !== 'object') return null;
+    const id = typeof m.id === 'string' ? m.id : null;
+    if(!id) return null;
+    return {
+      id,
+      title: String(m.title || '').slice(0, MAX_TITLE),
+      content: String(m.content || '').slice(0, MAX_BODY),
+      createdAt: typeof m.createdAt === 'number' ? m.createdAt : Date.now(),
+      updatedAt: typeof m.updatedAt === 'number' ? m.updatedAt : Date.now(),
+    };
+  }
+  function sanitizeMemos(arr){
+    if(!Array.isArray(arr)) return null;
+    return arr.map(sanitizeMemo).filter(Boolean).slice(0, MAX_MEMOS);
+  }
+  function sanitizeDraft(d){
+    if(!d || typeof d !== 'object') return null;
+    return {
+      id: typeof d.id === 'string' ? d.id : null,
+      title: String(d.title || '').slice(0, MAX_TITLE),
+      content: String(d.content || '').slice(0, MAX_BODY),
+    };
+  }
+  function newDraft(){ return { id: null, title: '', content: '' }; }
+  function newId(){ return 'm_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,7); }
+
+  /* ── Persistence ── */
+  function saveMemos(){ ls(LS_KEYS.MEMOS, memos); }
+  function saveDraft(){ ls(LS_KEYS.MEMO_DRAFT, draft); }
+  function saveFont(){ ls(LS_KEYS.MEMO_FONT, font); }
+
+  /* ── Status flash (top-right of toolbar) ── */
+  function flashStatus(msg){
+    const el = $('memoStatus');
+    if(!el) return;
+    el.textContent = msg;
+    el.classList.add('flash');
+    if(saveStatusTimer) clearTimeout(saveStatusTimer);
+    saveStatusTimer = setTimeout(() => {
+      el.classList.remove('flash');
+      el.textContent = draft.id ? '저장됨' : '미저장';
+    }, 1800);
+  }
+  function refreshStatusIdle(){
+    const el = $('memoStatus');
+    if(!el) return;
+    if(el.classList.contains('flash')) return; /* let the flash run */
+    el.textContent = draft.id ? '저장됨' : '미저장';
+  }
+
+  /* ── Font size cycle (작게 → 보통 → 크게) ── */
+  function applyFont(){
+    const body = $('memoBody');
+    if(!body) return;
+    body.classList.remove('font-sm','font-md','font-lg');
+    body.classList.add('font-' + font);
+    const lbl = $('memoFontLbl');
+    if(lbl) lbl.textContent = FONT_LBL[font];
+  }
+  function cycleFont(){
+    const i = FONTS.indexOf(font);
+    font = FONTS[(i + 1) % FONTS.length];
+    saveFont();
+    applyFont();
+  }
+
+  /* ── Bullet/number insertion ──
+     Operates on the lines covered by the current selection (or the line
+     containing the caret if nothing is selected). Prepends the marker to
+     each line. For 'num' and 'circ', numbering restarts from 1/① per call. */
+  function applyMarker(kind){
+    const ta = $('memoBody');
+    if(!ta) return;
+    const value = ta.value;
+    let s = ta.selectionStart, e = ta.selectionEnd;
+    /* Expand selection to cover whole lines */
+    const lineStart = value.lastIndexOf('\n', s - 1) + 1;
+    let lineEnd = value.indexOf('\n', e);
+    if(lineEnd === -1) lineEnd = value.length;
+    const block = value.slice(lineStart, lineEnd);
+    const lines = block.split('\n');
+    let numCounter = 0; /* skip blank lines when numbering, so 1. → blank → 2. */
+    const marked = lines.map((line) => {
+      if(line.trim() === '' && lines.length > 1) return line; /* preserve blank separators */
+      let prefix = '';
+      if(kind === 'dot') prefix = '\u2022 ';
+      else if(kind === 'num'){ prefix = (++numCounter) + '. '; }
+      else if(kind === 'circ'){
+        const idx = numCounter++;
+        prefix = (idx < CIRCLED.length ? CIRCLED[idx] : (idx + 1) + '.') + ' ';
+      }
+      return prefix + line;
+    });
+    const newBlock = marked.join('\n');
+    const newValue = value.slice(0, lineStart) + newBlock + value.slice(lineEnd);
+    /* Caret: place at end of the modified block */
+    const newCaret = lineStart + newBlock.length;
+    ta.value = newValue;
+    ta.setSelectionRange(newCaret, newCaret);
+    /* Trigger input handler to update draft */
+    onBodyInput();
+    ta.focus();
+  }
+
+  /* ── Save current draft as a new memo (or update existing one) ── */
+  function save(){
+    const title = $('memoTitle').value.trim().slice(0, MAX_TITLE);
+    const content = $('memoBody').value.slice(0, MAX_BODY);
+    if(!title && !content){
+      flashStatus('내용이 비어 있어요');
+      return;
+    }
+    const now = Date.now();
+    if(draft.id){
+      /* Update existing */
+      const idx = memos.findIndex(m => m.id === draft.id);
+      if(idx >= 0){
+        memos[idx].title = title;
+        memos[idx].content = content;
+        memos[idx].updatedAt = now;
+      } else {
+        /* Edge case: draft references a memo that was deleted elsewhere — re-create */
+        memos.unshift({ id: draft.id, title, content, createdAt: now, updatedAt: now });
+      }
+    } else {
+      /* New memo */
+      const id = newId();
+      memos.unshift({ id, title, content, createdAt: now, updatedAt: now });
+      draft.id = id;
+    }
+    /* Trim to MAX_MEMOS, oldest first by updatedAt */
+    if(memos.length > MAX_MEMOS){
+      memos.sort((a,b) => b.updatedAt - a.updatedAt);
+      memos = memos.slice(0, MAX_MEMOS);
+    }
+    draft.title = title;
+    draft.content = content;
+    saveMemos(); saveDraft();
+    flashStatus('저장됨 ✓');
+  }
+
+  /* ── Load a saved memo into the editor ── */
+  function load(id){
+    const m = memos.find(x => x.id === id);
+    if(!m) return;
+    draft = { id: m.id, title: m.title, content: m.content };
+    saveDraft();
+    $('memoTitle').value = m.title;
+    $('memoBody').value = m.content;
+    refreshStatusIdle();
+  }
+
+  /* ── New blank memo (clears editor + draft id) ── */
+  function newMemo(){
+    draft = newDraft();
+    saveDraft();
+    $('memoTitle').value = '';
+    $('memoBody').value = '';
+    refreshStatusIdle();
+    $('memoTitle').focus();
+  }
+
+  /* ── Delete a memo by id (with confirm) ── */
+  async function del(id){
+    const m = memos.find(x => x.id === id);
+    if(!m) return;
+    const t = m.title || '(제목 없음)';
+    if(!await customConfirm('메모 삭제', `"${t}" 메모를 삭제할까요?\n이 작업은 되돌릴 수 없어요.`)) return;
+    memos = memos.filter(x => x.id !== id);
+    saveMemos();
+    /* If the deleted memo was loaded in the editor, detach the id (keep content for safety) */
+    if(draft.id === id){
+      draft.id = null;
+      saveDraft();
+      refreshStatusIdle();
+    }
+    renderList();
+  }
+
+  /* ── Copy current editor body to clipboard ── */
+  async function copy(){
+    const text = $('memoBody').value;
+    if(!text){ flashStatus('복사할 내용이 없어요'); return; }
+    try {
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        await navigator.clipboard.writeText(text);
+      } else {
+        /* Fallback for older browsers / non-secure contexts */
+        const ta = $('memoBody');
+        ta.select();
+        document.execCommand('copy');
+        ta.setSelectionRange(ta.selectionEnd, ta.selectionEnd);
+      }
+      flashStatus('복사됨 ✓');
+    } catch(e){
+      flashStatus('복사 실패');
+    }
+  }
+
+  /* ── Live editor → draft sync (debounced via persisted writes only) ── */
+  function onBodyInput(){
+    draft.title = $('memoTitle').value.slice(0, MAX_TITLE);
+    draft.content = $('memoBody').value.slice(0, MAX_BODY);
+    saveDraft();
+    refreshStatusIdle();
+  }
+
+  /* ── List modal: render memos sorted newest-first by updatedAt ── */
+  function fmtTime(ts){
+    const d = new Date(ts), now = new Date();
+    const sameDay = d.toDateString() === now.toDateString();
+    const yest = new Date(now); yest.setDate(now.getDate() - 1);
+    const sameYest = d.toDateString() === yest.toDateString();
+    const hh = pad(d.getHours()), mm = pad(d.getMinutes());
+    if(sameDay) return `오늘 ${hh}:${mm}`;
+    if(sameYest) return `어제 ${hh}:${mm}`;
+    const sameYear = d.getFullYear() === now.getFullYear();
+    if(sameYear) return `${d.getMonth()+1}/${d.getDate()} ${hh}:${mm}`;
+    return `${d.getFullYear()}.${pad(d.getMonth()+1)}.${pad(d.getDate())}`;
+  }
+  function snippet(s){
+    const t = String(s || '').replace(/\s+/g, ' ').trim();
+    return t.length > 60 ? t.slice(0, 60) + '\u2026' : t;
+  }
+  let listSearchQ = '';
+  function renderList(){
+    const list = $('memoList');
+    if(!list) return;
+    const q = listSearchQ.toLowerCase();
+    const sorted = memos.slice().sort((a,b) => b.updatedAt - a.updatedAt);
+    const filtered = q
+      ? sorted.filter(m => (m.title + ' ' + m.content).toLowerCase().includes(q))
+      : sorted;
+    if(filtered.length === 0){
+      list.innerHTML = `<div class="memo-list-empty">${q ? '검색 결과가 없어요.' : '저장된 메모가 없어요.'}</div>`;
+      return;
+    }
+    list.innerHTML = filtered.map(m => {
+      const t = m.title ? esc(m.title) : '<span class="memo-item-untitled">(제목 없음)</span>';
+      const isActive = m.id === draft.id;
+      return `<div class="memo-item${isActive ? ' active' : ''}" data-mid="${esc(m.id)}">
+        <div class="memo-item-row">
+          <span class="memo-item-title">${t}</span>
+          <button class="memo-item-del" data-mdel="${esc(m.id)}" aria-label="삭제" title="삭제">&times;</button>
+        </div>
+        <div class="memo-item-meta">
+          <span class="memo-item-time">${fmtTime(m.updatedAt)}</span>
+        </div>
+        ${m.content ? `<div class="memo-item-snip">${esc(snippet(m.content))}</div>` : ''}
+      </div>`;
+    }).join('');
+  }
+  function openList(){
+    listSearchQ = '';
+    const s = $('memoListSearch');
+    if(s) s.value = '';
+    renderList();
+    $('memoListOv').classList.add('on');
+  }
+  function closeList(){ $('memoListOv').classList.remove('on'); }
+
+  /* ── Wire up DOM ── */
+  function init(){
+    /* Initial values */
+    $('memoTitle').value = draft.title;
+    $('memoBody').value = draft.content;
+    applyFont();
+    refreshStatusIdle();
+
+    /* Editor inputs → draft */
+    $('memoTitle').addEventListener('input', onBodyInput);
+    $('memoBody').addEventListener('input', onBodyInput);
+    /* Enter in title → focus body */
+    $('memoTitle').addEventListener('keydown', e => {
+      if(e.key === 'Enter'){ e.preventDefault(); $('memoBody').focus(); }
+    });
+
+    /* Header buttons */
+    $('memoSave').addEventListener('click', save);
+    $('memoListBtn').addEventListener('click', openList);
+
+    /* Toolbar */
+    $('memoFont').addEventListener('click', cycleFont);
+    $('memoCopy').addEventListener('click', copy);
+
+    /* Bullet dropdown */
+    const bBtn = $('memoBulletBtn'), bPop = $('memoBulletPop');
+    bBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      const open = bPop.classList.toggle('on');
+      bBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+    bPop.querySelectorAll('.memo-bullet-opt').forEach(opt => {
+      opt.addEventListener('click', e => {
+        e.stopPropagation();
+        applyMarker(opt.dataset.mark);
+        bPop.classList.remove('on');
+        bBtn.setAttribute('aria-expanded', 'false');
+      });
+    });
+    /* Close popup on outside click */
+    document.addEventListener('click', e => {
+      if(!bPop.classList.contains('on')) return;
+      if(e.target === bBtn || bBtn.contains(e.target)) return;
+      if(bPop.contains(e.target)) return;
+      bPop.classList.remove('on');
+      bBtn.setAttribute('aria-expanded', 'false');
+    });
+
+    /* List modal */
+    const ov = $('memoListOv');
+    $('memoListClose').addEventListener('click', closeList);
+    $('memoListCloseX').addEventListener('click', closeList);
+    ov.addEventListener('click', e => { if(e.target === ov) closeList(); });
+    /* List item clicks (delegated) */
+    $('memoList').addEventListener('click', e => {
+      const delBtn = e.target.closest('[data-mdel]');
+      if(delBtn){
+        e.stopPropagation();
+        del(delBtn.dataset.mdel);
+        return;
+      }
+      const item = e.target.closest('[data-mid]');
+      if(item){
+        load(item.dataset.mid);
+        renderList();
+        closeList();
+      }
+    });
+    /* List search */
+    $('memoListSearch').addEventListener('input', e => {
+      listSearchQ = e.target.value.trim();
+      renderList();
+    });
+
+    /* Auto-save draft on tab hide / page unload (best-effort) */
+    document.addEventListener('visibilitychange', () => {
+      if(document.visibilityState === 'hidden') saveDraft();
+    });
+  }
+
+  return { init, openList, closeList, newMemo };
+})();
+Memo.init();
+
+/* ── Global view switching (Timer·Todo / Stats / Memo) ── */
+function setView(name){
+  $$('.view-tab').forEach(b => {
+    const on = b.dataset.view === name;
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  $$('.view-panel').forEach(p => p.classList.remove('on'));
+  let panel;
+  if(name === 'stats') panel = $('viewStats');
+  else if(name === 'memo') panel = $('viewMemo');
+  else panel = $('viewTimer');
+  panel.classList.add('on');
+  if(name === 'stats') renderFullStats();
+}
+$$('.view-tab').forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
+
+/* Inline stats renderer for the stats view */
+function renderFullStats(){
+  const today = todayStr();
+  /* "This week" = most recent occurrence of the chosen week-start day, inclusive.
+     weekStartDay: 0=Sunday, 1=Monday. */
+  const now = new Date();
+  const currentDow = now.getDay();  /* 0=Sun..6=Sat */
+  const daysSinceStart = (currentDow - weekStartDay + 7) % 7;
+  const weekStart = new Date(); weekStart.setDate(weekStart.getDate() - daysSinceStart);
+  const weekStartStr = toDateStr(weekStart);
+
+  let todayC = 0, todayI = 0, weekC = 0, weekI = 0, totalC = 0, totalI = 0;
+  Object.keys(stats).forEach(k => {
+    const s = stats[k];
+    totalC += s.completed; totalI += s.interrupted;
+    if(k >= weekStartStr){ weekC += s.completed; weekI += s.interrupted; }
+    if(k === today){ todayC = s.completed; todayI = s.interrupted; }
+  });
+
+  $('vsToday').textContent = todayC;
+  $('vsWeek').textContent = weekC;
+  $('vsTotal').textContent = totalC;
+  $('vsTodayInt').textContent = todayI > 0 ? `중단 ${todayI}` : '\u00A0';
+  $('vsWeekInt').textContent  = weekI  > 0 ? `중단 ${weekI}`  : '\u00A0';
+  $('vsTotalInt').textContent = totalI > 0 ? `중단 ${totalI}` : '\u00A0';
+
+  /* N-day bars (N = statRange setting) */
+  const barsEl = $('vsBars');
+  const lblEl = $('vsBarsLabel');
+  if(lblEl) lblEl.textContent = statRange;
+  const days = [];
+  for(let i = statRange - 1; i >= 0; i--){
+    const d = new Date(); d.setDate(d.getDate() - i);
+    const k = toDateStr(d);
+    days.push({ key: k, label: d.getDate(), completed: (stats[k] && stats[k].completed) || 0, isToday: k === today });
+  }
+  const maxVal = Math.max(1, ...days.map(d => d.completed));
+  barsEl.innerHTML = days.map(d => {
+    const h = d.completed > 0 ? Math.max(4, Math.round((d.completed / maxVal) * 100)) : 2;
+    const fillCls = d.completed === 0 ? 'empty' : (d.isToday ? 'today' : '');
+    const valLbl = d.completed > 0 ? `<div class="stat-bar-val">${d.completed}</div>` : '';
+    return `<div class="stat-bar" title="${d.key.slice(5).replace('-','/')}${d.isToday?' (오늘)':''} — ${d.completed}회 완료">${valLbl}<div class="stat-bar-fill ${fillCls}" style="height:${h}%"></div><div class="stat-bar-day">${d.label}</div></div>`;
+  }).join('');
+
+  /* Per-task pomodoro counts */
+  const perEl = $('vsPerTodo');
+  const ranked = todos
+    .filter(t => (t.pomoCount || 0) > 0)
+    .slice()
+    .sort((a,b) => (b.pomoCount || 0) - (a.pomoCount || 0))
+    .slice(0, 10);
+  if(!ranked.length){
+    perEl.innerHTML = '<div class="stats-empty">아직 기록이 없어요. 할 일에 뽀모도로를 사용해 보세요.</div>';
+  } else {
+    const maxCount = ranked[0].pomoCount;
+    perEl.innerHTML = ranked.map(t => {
+      const pct = Math.round((t.pomoCount / maxCount) * 100);
+      const name = esc(t.t);
+      return `<div class="stat-todo ${t.d?'done':''}"><span class="stat-todo-t">${name}</span><div class="stat-todo-bar-wrap"><div class="stat-todo-bar" style="width:${pct}%"></div></div><span class="stat-todo-count">${t.pomoCount}</span></div>`;
+    }).join('');
+  }
+}
+
+/* Refresh stats view whenever a pomodoro session completes or gets interrupted,
+   if the stats view is currently visible. */
+/* Auto-refresh stats view whenever a session completes or gets interrupted,
+   but only if the user is currently looking at it. */
+onStatsChanged = () => {
+  if($('viewStats').classList.contains('on')) renderFullStats();
+};
+
+})();
+</script>
+</body>
+</html>
